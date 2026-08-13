@@ -2,7 +2,6 @@
 Smoke test: verify both API keys are valid, funded, and reachable.
 Makes one tiny call to each provider and prints the response.
 """
-
 import os
 from dotenv import load_dotenv
 

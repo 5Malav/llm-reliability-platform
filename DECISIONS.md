@@ -6,13 +6,15 @@ A running log of architectural decisions, the alternatives considered, and the r
 
 ## DEC-001 — SHA-pinned document corpus (not live scraping)
 
-**Decision:** Pull Supabase docs from their public source repository, pinned to a specific commit SHA. Pull GitHub issues via the API. Do **not** scrape rendered HTML.
+**Decision:** Pull Supabase docs from their public source repository (`apps/docs/content`), pinned to a specific commit SHA. Do **not** scrape rendered HTML.
 
 **Rejected alternative:** Scraping the live docs website.
 
 **Why:** A SHA-pinned corpus is reproducible — anyone can rebuild the exact vector store from the exact source. Scraping is fragile (breaks when the site's HTML changes) and unreproducible (the corpus silently drifts as the site updates). This is DVC-style thinking applied to documents: the data source is versioned, not a moving target.
 
 **Trade-off:** When Supabase ships new docs, I must deliberately re-pin and re-index — the corpus doesn't auto-update. That's a feature: re-indexing becomes a controlled, observable event, not a silent change.
+
+**Implementation:** Shallow sparse-checkout of only `apps/docs/content`, git metadata stripped so files become plain content. Pinned SHA: `5b68af1720454884faa18eee16cc2af5aa093181` (817 `.mdx` files, 6.6 MB). Recorded in `ingestion/data/SOURCES.md`.
 
 ---
 
@@ -25,3 +27,25 @@ A running log of architectural decisions, the alternatives considered, and the r
 **Why:** Haiku is ~5× cheaper than Sonnet at near-comparable quality for most tasks. The real budget killer is eval runs (150 questions × generation × multiple judge calls). Restricting full evals to phase gates and routing them through the Batch API (50% discount) keeps the entire project under a ~$20–30/month budget. Cost-per-query is itself a monitored metric — cost discipline is part of the product, not a constraint on it.
 
 **Trade-off:** The ~20-question smoke set gives faster but less complete signal during iteration. Acceptable — full signal is available on demand at gates.
+
+---
+
+## DEC-003 — Docs-only corpus for v1.0; GitHub issues deferred
+
+**Decision:** Build the initial pipeline on Supabase's 817 MDX docs alone. Defer GitHub issues to a post-v1.0 enrichment.
+
+**Rejected alternative:** Pulling docs + issues together for v1.0.
+
+**Why:** Validate the full RAG pipeline (chunk → embed → store → retrieve → cite) on clean, uniform data before adding a noisier, differently-formatted source. Adding issues on day one would mean debugging data quality and retrieval logic simultaneously. Sequencing reduces risk and isolates variables — get the simplest version working end-to-end, then enrich.
+
+**Trade-off:** v1.0 answers happy-path questions well but not real-world debugging ("why is X failing for me"). Accepted — issues are a planned, measurable addition once the pipeline is proven, extending a validated system rather than building on unproven machinery.
+
+## DEC-004 — Custom regex cleaner over MDX parser library
+
+**Decision:** Clean MDX with a small custom script (strip-then-mask ordering, code-block protection) rather than a markdown/MDX parser library.
+
+**Rejected alternative:** A generic MDX AST parser.
+
+**Why:** Supabase uses non-standard MDX (`<$Show>`, `<$Partial>`) that generic parsers don't handle. For a bounded, inspected, one-time batch over 817 files, a targeted cleaner I control is simpler and more robust than a dependency that chokes on custom syntax — and when an edge case appears (INC-001), I can fix it because I wrote it.
+
+**Trade-off:** The cleaner is corpus-specific, not general-purpose. Acceptable — it's a batch job for a fixed corpus, not a live pipeline over arbitrary MDX.
