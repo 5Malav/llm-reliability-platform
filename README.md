@@ -12,7 +12,7 @@ Most teams ship the chatbot first and bolt on logging later, so they discover fa
 
 This is the LLM-reliability counterpart to a classical MLOps pipeline: proving that production language-model systems can be kept **alive, observable, and trustworthy** — not just demoed once and abandoned.
 
-## Architecture (at a glance)
+## Target Architecture
 
 | Layer | Choice | Why |
 |-------|--------|-----|
@@ -25,11 +25,34 @@ This is the LLM-reliability counterpart to a classical MLOps pipeline: proving t
 | Safety | Guardrails AI | Injection + PII filtering at input and output |
 | Infra | FastAPI · Docker · Cloud Run · GitHub Actions · Terraform | Reused, battle-tested stack |
 
-## Status
+## Progress
 
-🚧 **In active development** — building in public, one phase at a time.
+Built in public, one phase at a time. Each phase ships a version tag.
 
-See [`docs/`](./docs) for build notes and [`DECISIONS.md`](./DECISIONS.md) for the engineering rationale behind each choice.
+| Phase | Focus | Status |
+|-------|-------|--------|
+| 0 | Foundation — repo, env, funded keys, smoke test | ✅ `v0.0` |
+| 1 | Document ingestion — clean, chunk, embed, store | 🔄 in progress |
+| 2 | Basic RAG — retrieve + cited answers | ⬜ |
+| 3 | Retrieval quality — hybrid + rerank | ⬜ |
+| 4–5 | Golden dataset + eval pipeline | ⬜ |
+| 6 | Observability (the heart) | ⬜ |
+| 7 | Orchestration — LangGraph | ⬜ |
+| 8 | Safety — Guardrails | ⬜ |
+| 9 | Fine-tuning — RAG vs fine-tune comparison | ⬜ |
+| 10 | Production deploy — CI/CD with eval gates | ⬜ |
+| 11 | Storytelling — incident log, blog, launch | ⬜ |
+
+## Data Pipeline (Phase 1)
+
+The corpus is Supabase's official documentation, pulled reproducibly and cleaned for retrieval.
+
+- **Source:** `apps/docs/content` from the [supabase/supabase](https://github.com/supabase/supabase) monorepo, pinned to a commit SHA for reproducibility
+- **Ingestion:** shallow sparse-checkout of only the docs subtree; git metadata stripped
+- **Cleaning:** custom MDX preprocessor — strips component tags, protects code blocks, extracts metadata, filters nav-only pages
+- **Result:** **817 raw docs → 793 clean documents** (~556K words), each with title, description, and source path preserved for citations
+
+See [`DECISIONS.md`](./DECISIONS.md) for engineering rationale and [`INCIDENTS.md`](./INCIDENTS.md) for the running incident log.
 
 ## Setup
 
