@@ -3,10 +3,8 @@ __pycache__/
 *.py[codz]
 *$py.class
 
-# Data — regenerable from pinned SHA + scripts, not committed to git
-ingestion/data/raw/
-ingestion/data/processed/
-
+# Data — regenerable from pinned SHA + scripts, never committed
+ingestion/data/
 # C extensions
 *.so
 

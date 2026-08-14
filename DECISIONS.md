@@ -49,3 +49,15 @@ A running log of architectural decisions, the alternatives considered, and the r
 **Why:** Supabase uses non-standard MDX (`<$Show>`, `<$Partial>`) that generic parsers don't handle. For a bounded, inspected, one-time batch over 817 files, a targeted cleaner I control is simpler and more robust than a dependency that chokes on custom syntax — and when an edge case appears (INC-001), I can fix it because I wrote it.
 
 **Trade-off:** The cleaner is corpus-specific, not general-purpose. Acceptable — it's a batch job for a fixed corpus, not a live pipeline over arbitrary MDX.
+
+## DEC-005 — Fixed-size chunking: 500 tokens, 75-token overlap, 100-token floor
+
+**Decision:** Chunk documents with a fixed 500-token sliding window, stepping 425 tokens (75-token / 15% overlap). Drop trailing slices under 100 tokens. Whole documents shorter than 500 tokens are kept intact regardless of size.
+
+**Rejected alternatives:** Semantic chunking (an LLM call per split — slow, expensive, unjustified without a baseline). Structure-aware chunking at headings (uneven sizes, fragile on inconsistent docs).
+
+**Why:** 500 tokens fits how documentation is written — one focused section per chunk: large enough for a complete how-to, small enough to keep the embedding sharp. 15% overlap protects answers that span a chunk boundary. The 100-token floor removes trailing scraps whose content is already present, complete, in the previous chunk via overlap.
+
+**Important nuance:** the floor applies only to *sliced* remainders, not to whole short documents. Inspection showed 33 sub-100-token chunks were complete FAQ/troubleshooting answers ("why am I getting JWT expired errors?"). Small is not the same as incomplete — filtering by size alone would have deleted real answers.
+
+**Trade-off:** These numbers are a starting hypothesis, not a tuned result. Chunk size is a config value; retrieval quality will be measured against the golden dataset in Phase 4–5, and this is the first dial to turn if results underperform.
