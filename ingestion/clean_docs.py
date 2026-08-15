@@ -99,9 +99,16 @@ def process_file(path):
 
 
 def main():
+    # Wipe previous output so a re-run reflects current settings exactly
+    # (no stale files from earlier runs — see INC-004)
+    if OUT_DIR.exists():
+        for old in OUT_DIR.glob("*.json"):
+            old.unlink()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    mdx_files = list(RAW_DIR.rglob("*.mdx"))
+    
+    # Exclude test fixtures — build scaffolding, not documentation
+    # mdx_files = list(RAW_DIR.rglob("*.mdx"))
+    mdx_files = [f for f in RAW_DIR.rglob("*.mdx") if "_fixtures" not in str(f)]
     processed = 0
     skipped = 0
 

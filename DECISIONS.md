@@ -61,3 +61,13 @@ A running log of architectural decisions, the alternatives considered, and the r
 **Important nuance:** the floor applies only to *sliced* remainders, not to whole short documents. Inspection showed 33 sub-100-token chunks were complete FAQ/troubleshooting answers ("why am I getting JWT expired errors?"). Small is not the same as incomplete — filtering by size alone would have deleted real answers.
 
 **Trade-off:** These numbers are a starting hypothesis, not a tuned result. Chunk size is a config value; retrieval quality will be measured against the golden dataset in Phase 4–5, and this is the first dial to turn if results underperform.
+
+## DEC-006 — Keep `_partials/`, exclude `_fixtures/`
+
+**Decision:** Include Supabase's `_partials/` fragment files as first-class documents in the corpus. Exclude anything under `_fixtures/`.
+
+**Rejected alternatives:** Excluding all `_partials/` (they're fragments, not standalone pages). Including everything (fixtures are build scaffolding).
+
+**Why:** The cleaner strips `<$Partial>` injection tags, so partial content does not survive inside the pages that reference it — the partial file is the only remaining source. Some partials hold unique, high-value content (API rate limits exist nowhere else). Excluding them would create real knowledge holes. Fixtures, by contrast, are test scaffolding with zero informational value.
+
+**Principle:** Filter on content value, not folder name. Same lesson as the chunk-size floor — unusual location or small size doesn't mean worthless; *incomplete* does.

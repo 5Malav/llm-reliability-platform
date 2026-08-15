@@ -37,3 +37,12 @@ Real failures encountered building and running this system, in SRE post-mortem s
 - **Fix:** Added `MIN_CHUNK_TOKENS = 100` — trailing slices below the floor are dropped. Safe because overlap means that content already appears, complete, in the previous chunk.
 - **Follow-up finding:** 33 sub-100-token chunks survived the fix. Investigation showed these are *whole short documents* (total_chunks = 1) taking the early-return path — complete FAQ answers, not fragments. Correctly left intact. **Lesson: filter on completeness, not size.**
 - **Prevention:** Inspected the distribution of chunk sizes and read the actual smallest chunks rather than trusting the "complete" summary. Third time in this phase that content inspection caught what the summary hid.
+
+### INC-004 — Stale output files caused pipeline count mismatch
+
+- **Date:** 2026-08-13
+- **Symptom:** After excluding test fixtures, the cleaner reported 792 documents but the chunker read 793. Fixture chunks persisted in the corpus despite the filter.
+- **Impact:** Corpus contained a test-scaffolding document that should have been excluded. Silent — no error, just two stages quietly disagreeing on document count.
+- **Root cause:** The cleaner wrote new output without clearing the old. A previously-generated fixture JSON survived the re-run, so the output directory held a mix of two configurations. The stage was incremental when it needed to be idempotent.
+- **Fix:** Cleaner now wipes its output directory before writing, so a re-run reflects current settings exactly.
+- **Prevention:** Cross-checked counts between consecutive pipeline stages. The mismatch (792 vs 793) was the only signal — neither stage errored. **Lesson: when two stages disagree on a count, believe the disagreement.**
