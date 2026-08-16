@@ -56,6 +56,33 @@ def chunk_text(text):
 
     return chunks
 
+DOCS_BASE_URL = "https://supabase.com/docs/"
+
+
+def build_url(source_path):
+    """Turn a source file path into a live Supabase docs URL.
+
+    Returns None for _partials — those are fragments injected into other
+    pages and have no standalone URL. An absent link is honest; a wrong
+    link is worse than none.
+    """
+    if source_path.startswith("_partials"):
+        return None
+
+    # guides/auth/x.mdx  ->  https://supabase.com/docs/guides/auth/x
+    return DOCS_BASE_URL + source_path.removesuffix(".mdx")
+
+def get_doc_type(source_path):
+    """Derive the document type from its top-level folder."""
+    top = source_path.split("/")[0]
+
+    if top == "guides":
+        return "guide"
+    if top == "troubleshooting":
+        return "troubleshooting"
+    if top == "_partials":
+        return "partial"
+    return "other"
 
 def process_doc(doc):
     """Turn one document into a list of chunk records."""
@@ -68,6 +95,8 @@ def process_doc(doc):
             "doc_id": doc["id"],
             "title": doc["title"],
             "source_path": doc["source_path"],
+            "url": build_url(doc["source_path"]),
+            "doc_type": get_doc_type(doc["source_path"]),
             "chunk_index": i,                       # which slice of the doc
             "total_chunks": len(pieces),            # how many slices the doc made
             "text": piece,

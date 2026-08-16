@@ -71,3 +71,11 @@ A running log of architectural decisions, the alternatives considered, and the r
 **Why:** The cleaner strips `<$Partial>` injection tags, so partial content does not survive inside the pages that reference it — the partial file is the only remaining source. Some partials hold unique, high-value content (API rate limits exist nowhere else). Excluding them would create real knowledge holes. Fixtures, by contrast, are test scaffolding with zero informational value.
 
 **Principle:** Filter on content value, not folder name. Same lesson as the chunk-size floor — unusual location or small size doesn't mean worthless; *incomplete* does.
+
+## DEC-007 — Chunk metadata: URL, doc type; section headings deferred
+
+**Decision:** Each chunk carries a resolvable docs URL and a document type (guide / troubleshooting / partial). Section-level headings are deferred to Phase 3.
+
+**Why:** URL enables verifiable citation — the trust mechanism of the system. Doc type is nearly free (derived from the top-level folder) and becomes a retrieval filter: error-shaped questions can bias toward troubleshooting content. Section headings require tracking heading context through the chunking loop, and their value is speculative until retrieval quality can be measured — so they wait until Phase 3, when the eval set can show whether they help.
+
+**Note on partials:** the 46 chunks sourced from `_partials/` carry `url: None` rather than a fabricated link. A wrong citation is worse than an absent one — it invites verification and sends the user somewhere the claim isn't.
