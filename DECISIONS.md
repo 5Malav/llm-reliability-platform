@@ -79,3 +79,15 @@ A running log of architectural decisions, the alternatives considered, and the r
 **Why:** URL enables verifiable citation — the trust mechanism of the system. Doc type is nearly free (derived from the top-level folder) and becomes a retrieval filter: error-shaped questions can bias toward troubleshooting content. Section headings require tracking heading context through the chunking loop, and their value is speculative until retrieval quality can be measured — so they wait until Phase 3, when the eval set can show whether they help.
 
 **Note on partials:** the 46 chunks sourced from `_partials/` carry `url: None` rather than a fabricated link. A wrong citation is worse than an absent one — it invites verification and sends the user somewhere the claim isn't.
+
+## DEC-008 — Postgres + pgvector, no vector index for v1.0
+
+**Decision:** Store chunks and embeddings in Postgres with the pgvector extension, running in Docker. Use `text-embedding-3-small` (1536 dimensions). Add a B-tree index on `doc_type`, but **no** vector index (HNSW/IVFFlat) for now.
+
+**Rejected alternatives:** A dedicated vector database (Pinecone, Weaviate) — another service, another failure mode, another vendor, and a second source of truth to sync with metadata. `text-embedding-3-large` (3072d) — double the cost, storage, and comparison time for a quality gain I can't yet measure.
+
+**Why no vector index:** At 2,654 rows a sequential scan is sub-millisecond. HNSW and IVFFlat are *approximate* — they trade recall for speed — so indexing here means accepting slightly worse results to solve a latency problem that doesn't exist. Search latency is instrumented in Phase 6; if p95 exceeds budget as the corpus grows, adding an index becomes a measured change with a before/after.
+
+**Schema notes:** `chunk_id` carries a UNIQUE constraint as a re-run guard — a duplicate insert is rejected by the database rather than silently doubling the corpus. `url` is nullable because 46 partial-sourced chunks have no standalone page.
+
+**Trade-off:** Changing embedding models later requires altering the column dimension and re-embedding the corpus. Known migration cost, accepted.

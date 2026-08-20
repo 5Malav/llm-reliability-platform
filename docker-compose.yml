@@ -1,0 +1,28 @@
+services:
+  db:
+    # Official pgvector image = Postgres 16 with the extension pre-installed
+    image: pgvector/pgvector:pg16
+    container_name: llm-reliability-db
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: llm_reliability
+
+    ports:
+      # host:container — connect from your Mac on localhost:5433
+      - "5433:5432"
+
+    volumes:
+      # Named volume so data survives container restarts
+      - pgdata:/var/lib/postgresql/data
+
+    healthcheck:
+      # Docker checks the DB is actually accepting connections, not just "started"
+      test: ["CMD-SHELL", "pg_isready -U postgres -d llm_reliability"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
