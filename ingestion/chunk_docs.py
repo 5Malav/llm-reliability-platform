@@ -89,22 +89,25 @@ def process_doc(doc):
     pieces = chunk_text(doc["content"])
     records = []
 
+    # Unique doc key from the full path — filenames alone collide across
+    # folders (guides/ai/concepts.mdx vs guides/realtime/concepts.mdx). See INC-005.
+    doc_key = doc["source_path"].removesuffix(".mdx").replace("/", "__")
+
     for i, piece in enumerate(pieces):
         records.append({
-            "chunk_id": f"{doc['id']}__{i}",       # unique id: docid__0, docid__1...
-            "doc_id": doc["id"],
+            "chunk_id": f"{doc_key}__{i}",
+            "doc_id": doc_key,
             "title": doc["title"],
             "source_path": doc["source_path"],
             "url": build_url(doc["source_path"]),
             "doc_type": get_doc_type(doc["source_path"]),
-            "chunk_index": i,                       # which slice of the doc
-            "total_chunks": len(pieces),            # how many slices the doc made
+            "chunk_index": i,
+            "total_chunks": len(pieces),
             "text": piece,
             "token_count": len(encoder.encode(piece)),
         })
 
     return records
-
 
 def main():
     files = sorted(IN_DIR.glob("*.json"))

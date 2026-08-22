@@ -91,3 +91,11 @@ A running log of architectural decisions, the alternatives considered, and the r
 **Schema notes:** `chunk_id` carries a UNIQUE constraint as a re-run guard — a duplicate insert is rejected by the database rather than silently doubling the corpus. `url` is nullable because 46 partial-sourced chunks have no standalone page.
 
 **Trade-off:** Changing embedding models later requires altering the column dimension and re-embedding the corpus. Known migration cost, accepted.
+
+## DEC-009 — Chunk IDs derived from full source path
+
+**Decision:** `chunk_id` = full source path with separators replaced, plus chunk index (`guides__ai__concepts__0`).
+
+**Rejected alternative:** Filename stem plus index (`concepts__0`) — shorter and more readable, but not unique.
+
+**Why:** Filenames repeat across folders in the source corpus; only the full path is unique. An identifier derived from a partial key will eventually collide, and the failure is silent — a dictionary keyed on it drops rows without error (INC-005). Readability is not worth correctness in an identifier.

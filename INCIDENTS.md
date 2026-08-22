@@ -46,3 +46,12 @@ Real failures encountered building and running this system, in SRE post-mortem s
 - **Root cause:** The cleaner wrote new output without clearing the old. A previously-generated fixture JSON survived the re-run, so the output directory held a mix of two configurations. The stage was incremental when it needed to be idempotent.
 - **Fix:** Cleaner now wipes its output directory before writing, so a re-run reflects current settings exactly.
 - **Prevention:** Cross-checked counts between consecutive pipeline stages. The mismatch (792 vs 793) was the only signal — neither stage errored. **Lesson: when two stages disagree on a count, believe the disagreement.**
+
+### INC-005 — chunk_id collisions silently dropped 119 chunks
+
+- **Date:** 2026-08-14
+- **Symptom:** Embedding job reported "2,654 chunks embedded" but "2,535 total in file." No error raised — two summary lines simply disagreed by 119.
+- **Impact:** 119 chunks of real documentation silently missing from the corpus (AI concepts, semantic search guides). The system would have reported "no information available" for content that was successfully ingested and paid for. Downstream, the `chunk_id UNIQUE` constraint would have rejected these inserts in Postgres, surfacing as confusing constraint errors far from the actual cause.
+- **Root cause:** `chunk_id` was built from `path.stem` — the filename without its folders. Supabase reuses common filenames across topic folders (`guides/ai/concepts.mdx` and `guides/realtime/concepts.mdx`). Both produced `concepts__0`. The results dictionary was keyed by `chunk_id`, so the second document silently overwrote the first. 87 colliding IDs, 119 lost rows.
+- **Fix:** Build the document key from the full source path with separators replaced (`guides/ai/concepts.mdx` → `guides__ai__concepts`). Path uniqueness now guarantees ID uniqueness.
+- **Prevention:** Cross-checked "chunks processed" against "chunks saved" — the only signal. Added a uniqueness assertion to the verification step. **Lesson: when a job reports two counts, check they agree. Identity derived from a partial key is identity waiting to collide.**
