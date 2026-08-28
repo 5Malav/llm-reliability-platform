@@ -32,7 +32,7 @@ Built in public, one phase at a time. Each phase ships a version tag.
 | Phase | Focus | Status |
 |-------|-------|--------|
 | 0 | Foundation — repo, env, funded keys, smoke test | ✅ `v0.0` |
-| 1 | Document ingestion — clean, chunk, embed, store | ✅ `v0.1` |
+| 1 | Document ingestion — clean, chunk, embed, store | ✅ `v1.0` |
 | 2 | Basic RAG — retrieve + cited answers | ⬜ |
 | 3 | Retrieval quality — hybrid + rerank | ⬜ |
 | 4–5 | Golden dataset + eval pipeline | ⬜ |
