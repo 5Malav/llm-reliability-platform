@@ -45,14 +45,28 @@ Built in public, one phase at a time. Each phase ships a version tag.
 
 ## Data Pipeline (Phase 1)
 
-The corpus is Supabase's official documentation, pulled reproducibly and cleaned for retrieval.
 
-- **Source:** `apps/docs/content` from the [supabase/supabase](https://github.com/supabase/supabase) monorepo, pinned to a commit SHA for reproducibility
-- **Ingestion:** shallow sparse-checkout of only the docs subtree; git metadata stripped
+- **Source:** `apps/docs/content` from the [supabase/supabase](https://github.com/supabase/supabase) monorepo, pinned to commit `5b68af17` — the corpus is reproducible, not scraped
 - **Cleaning:** custom MDX preprocessor — strips component tags, protects code blocks, extracts metadata, filters nav-only pages
-- **Result:** **817 raw docs → 793 clean documents** (~556K words), each with title, description, and source path preserved for citations
+- **Chunking:** 500-token sliding window, 75-token (15%) overlap, 100-token floor for trailing slices
+- **Metadata:** every chunk carries title, source path, doc type, and a resolvable docs URL for citation
+- **Embeddings:** `text-embedding-3-small` (1536d), batched 100/call, resumable, ~$0.023 for the full corpus
+- **Storage:** Postgres 16 + pgvector in Docker; idempotent upsert on `chunk_id`
 
-See [`DECISIONS.md`](./DECISIONS.md) for engineering rationale and [`INCIDENTS.md`](./INCIDENTS.md) for the running incident log.
+### Retrieval — measured behaviour
+
+| Query | Top result | Distance |
+|---|---|---|
+| "how do I set up GitHub authentication?" | Login with GitHub | **0.38** |
+| "what are the API rate limits?" | API rate limits | **0.39** |
+| "why am I getting row level security errors?" | Row Level Security | **0.48** |
+| "how do I make a pizza?" *(out of scope)* | — | **0.72** |
+
+Answerable questions retrieve at 0.38–0.51; out-of-scope questions at 0.72+. That separation is an externally-computed confidence signal — the basis for calibrated refusal in later phases.
+
+### Engineering log
+
+Five incidents were found and fixed during Phase 1 — every one caught by cross-checking numbers rather than by an error message. See [`INCIDENTS.md`](./INCIDENTS.md).
 
 ## Setup
 

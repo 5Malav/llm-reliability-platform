@@ -99,3 +99,11 @@ A running log of architectural decisions, the alternatives considered, and the r
 **Rejected alternative:** Filename stem plus index (`concepts__0`) — shorter and more readable, but not unique.
 
 **Why:** Filenames repeat across folders in the source corpus; only the full path is unique. An identifier derived from a partial key will eventually collide, and the failure is silent — a dictionary keyed on it drops rows without error (INC-005). Readability is not worth correctness in an identifier.
+
+## DEC-010 — Cosine distance for similarity search
+
+**Decision:** Use cosine distance (`<=>`) for vector similarity, not Euclidean (`<->`).
+
+**Why:** Cosine compares direction rather than magnitude, which suits normalized text embeddings — two passages about the same topic should match regardless of length. Euclidean would let vector magnitude influence ranking, which carries no semantic meaning here.
+
+**Measured result:** answerable questions retrieve at 0.38–0.51; an out-of-scope question ("how do I make a pizza") retrieves at 0.72–0.78. Clear

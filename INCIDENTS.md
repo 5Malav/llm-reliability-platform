@@ -55,3 +55,17 @@ Real failures encountered building and running this system, in SRE post-mortem s
 - **Root cause:** `chunk_id` was built from `path.stem` — the filename without its folders. Supabase reuses common filenames across topic folders (`guides/ai/concepts.mdx` and `guides/realtime/concepts.mdx`). Both produced `concepts__0`. The results dictionary was keyed by `chunk_id`, so the second document silently overwrote the first. 87 colliding IDs, 119 lost rows.
 - **Fix:** Build the document key from the full source path with separators replaced (`guides/ai/concepts.mdx` → `guides__ai__concepts`). Path uniqueness now guarantees ID uniqueness.
 - **Prevention:** Cross-checked "chunks processed" against "chunks saved" — the only signal. Added a uniqueness assertion to the verification step. **Lesson: when a job reports two counts, check they agree. Identity derived from a partial key is identity waiting to collide.**
+
+### OBS-001 — Retrieval redundancy: multiple chunks from one document
+
+- **Date:** 2026-08-14
+- **Observation:** A query for GitHub authentication returned two of five results from the same source document (`self-hosted-oauth`), different chunks. Result diversity is reduced — fewer distinct sources reach the answer stage.
+- **Impact:** Not a failure, but a quality ceiling. If two slots go to one document, the LLM sees a narrower evidence base than the top-k count suggests.
+- **Planned fix:** Phase 3 — either cap chunks per document in the result set, or apply reranking with diversity. Deferred until retrieval quality can be measured against the golden dataset.
+
+### OBS-002 — Partials retrieve well but have no citable URL
+
+- **Date:** 2026-08-14
+- **Observation:** A query for API rate limits returned a `_partials/` chunk as the single best match (distance 0.39) — better than any full guide. But partials carry `url: None` by design (DEC-006), so this best-answer chunk cannot be linked.
+- **Impact:** The strongest retrieval result for some queries is uncitable. Raises a Phase 2 design question: how does the answer layer present a grounded claim with no source link?
+- **Options:** cite the parent page that includes the partial, or state the source name without a link. Deferred to Phase 2 answer design.
