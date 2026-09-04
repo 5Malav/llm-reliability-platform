@@ -69,3 +69,13 @@ Real failures encountered building and running this system, in SRE post-mortem s
 - **Observation:** A query for API rate limits returned a `_partials/` chunk as the single best match (distance 0.39) — better than any full guide. But partials carry `url: None` by design (DEC-006), so this best-answer chunk cannot be linked.
 - **Impact:** The strongest retrieval result for some queries is uncitable. Raises a Phase 2 design question: how does the answer layer present a grounded claim with no source link?
 - **Options:** cite the parent page that includes the partial, or state the source name without a link. Deferred to Phase 2 answer design.
+
+### INC-006 — Refusal string used as a preamble, corrupting the refusal metric
+
+- **Date:** 2026-08-29
+- **Symptom:** A well-retrieved query ("why am I getting row level security errors?", distance 0.477 — within the answerable range) produced the exact refusal sentence followed by a complete, correctly-cited answer.
+- **Impact:** The refusal metric lied. Detection used `text.startswith(REFUSAL)`, so this logged as `refused=True` while the user received a full answer. A Phase 6 dashboard would have shown a refusal that never happened — silent metric corruption, exactly the failure class this project exists to catch.
+- **Root cause:** Two failures. (1) Prompt ambiguity: Rule 4 (partial answers) conflicted with Rule 3 (refuse), so the model satisfied both. (2) Naive detection: a prefix match cannot distinguish a refusal from a refusal-shaped preamble.
+- **Fix:** (1) Prompt Rule 3 now states the refusal must be the entire response. (2) `is_refusal()` requires the response to be short as well as prefix-matching. (3) Added a separate `hedged` flag that records the contradiction when it still occurs.
+- **Residual:** The hedge still occurs on this query after the prompt fix, but is now correctly classified (`refused=False`, `hedged=True`) rather than miscounted. The behavior is visible instead of hidden — a known issue with a metric attached, not a silent one.
+- **Prevention:** Any string-matched behavior needs a check that the match *is* the whole behavior, not merely its prefix.

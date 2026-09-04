@@ -107,3 +107,21 @@ A running log of architectural decisions, the alternatives considered, and the r
 **Why:** Cosine compares direction rather than magnitude, which suits normalized text embeddings — two passages about the same topic should match regardless of length. Euclidean would let vector magnitude influence ranking, which carries no semantic meaning here.
 
 **Measured result:** answerable questions retrieve at 0.38–0.51; an out-of-scope question ("how do I make a pizza") retrieves at 0.72–0.78. Clear
+
+## DEC-011 — Retrieval distance gates generation
+
+**Decision:** Refuse before calling the LLM when the best retrieval distance exceeds 0.65.
+
+**Measured basis:** answerable questions in this corpus retrieve at 0.38–0.51; out-of-scope questions at 0.72+. The threshold sits in the gap.
+
+**Why:** A cheap deterministic signal gating an expensive stochastic one. Without the gate, an out-of-scope question cost ~3,000 input tokens and 3.5s for the model to conclude what retrieval already knew. With it: zero tokens, sub-second.
+
+**Trade-off:** The threshold derives from a handful of test queries — a starting hypothesis, not a validated value, in the same category as chunk size. It is a config constant so tuning is a one-line change. Phase 4's golden dataset, including its unanswerable set, is what will actually calibrate it. A threshold set too low would refuse answerable questions, which is the more damaging error and the one the eval set must measure.
+
+## DEC-012 — JSONL for query telemetry
+
+**Decision:** Log per-query metrics as JSONL (one JSON object per line), written at query time.
+
+**Rejected alternatives:** CSV (rigid schema), a database (over-engineering for append-only telemetry at this volume).
+
+**Why:** Append-only, crash-safe (a failed write costs one line), schema-flexible (new fields don't break old rows), and directly loadable into pandas or a dashboard. Instrumenting from the first working version means Phase 6 reads a log rather than retrofitting instrumentation into code not designed for it.
