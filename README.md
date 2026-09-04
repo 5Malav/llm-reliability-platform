@@ -33,7 +33,7 @@ Built in public, one phase at a time. Each phase ships a version tag.
 |-------|-------|--------|
 | 0 | Foundation — repo, env, funded keys, smoke test | ✅ `v0.0` |
 | 1 | Document ingestion — clean, chunk, embed, store | ✅ `v1.0` |
-| 2 | Basic RAG — retrieve + cited answers | ⬜ |
+| 2 | Basic RAG — retrieve + cited answers | ✅ `v1.1` |
 | 3 | Retrieval quality — hybrid + rerank | ⬜ |
 | 4–5 | Golden dataset + eval pipeline | ⬜ |
 | 6 | Observability (the heart) | ⬜ |
@@ -43,7 +43,9 @@ Built in public, one phase at a time. Each phase ships a version tag.
 | 10 | Production deploy — CI/CD with eval gates | ⬜ |
 | 11 | Storytelling — incident log, blog, launch | ⬜ |
 
-## Data Pipeline (Phase 1)
+## Data Pipeline (Phase 1 — `v1.0`)
+
+811 source .mdx → 792 clean docs → 2,654 chunks → 2,654 embeddings → Postgres
 
 
 - **Source:** `apps/docs/content` from the [supabase/supabase](https://github.com/supabase/supabase) monorepo, pinned to commit `5b68af17` — the corpus is reproducible, not scraped
@@ -55,18 +57,64 @@ Built in public, one phase at a time. Each phase ships a version tag.
 
 ### Retrieval — measured behaviour
 
-| Query | Top result | Distance |
-|---|---|---|
-| "how do I set up GitHub authentication?" | Login with GitHub | **0.38** |
-| "what are the API rate limits?" | API rate limits | **0.39** |
-| "why am I getting row level security errors?" | Row Level Security | **0.48** |
-| "how do I make a pizza?" *(out of scope)* | — | **0.72** |
+Across a test set of 8 queries, retrieval distance separates answerable from out-of-scope questions cleanly:
 
-Answerable questions retrieve at 0.38–0.51; out-of-scope questions at 0.72+. That separation is an externally-computed confidence signal — the basis for calibrated refusal in later phases.
+| Query | Distance | Outcome |
+|---|---|---|
+| "how do I deploy an edge function?" | **0.28** | answered |
+| "how do I set up GitHub authentication?" | **0.38** | answered |
+| "how do I upload a file to storage?" | **0.39** | answered |
+| "what is Row Level Security?" | **0.40** | answered |
+| "how do I create a database function?" | **0.41** | answered |
+| "why am I getting row level security errors?" | **0.48** | answered |
+| "how do I make a pizza?" *(out of scope)* | **0.72** | refused |
+| "what is the capital of France?" *(out of scope)* | **0.83** | refused |
+
+Answerable questions retrieve at **0.28–0.48**; out-of-scope questions at **0.72+**. A ~0.25 gap with no overlap. That separation is an externally-computed confidence signal — not the model's self-reported confidence — and it is what the refusal gate acts on.
+
+## RAG Pipeline (Phase 2 — `v1.1`)
+
+Retrieved chunks are grounded into cited answers, with refusal treated as correct behaviour rather than failure.
+
+```
+question → embed → retrieve top-5 → distance gate → grounded prompt → cited answer
+                                          ↓ (> 0.65)
+                                       refuse, zero cost
+```
+
+
+- **Grounding:** the system prompt permits answers only from retrieved context, requires a citation on every claim, and specifies an exact refusal sentence — a fixed string is machine-detectable, which makes refusal rate a metric rather than a hope
+- **Calibrated refusal:** when the best retrieval distance exceeds 0.65, the query is refused **before the LLM is called** — a cheap deterministic signal gating an expensive stochastic one
+- **Provider failover:** all calls route through LiteLLM; a primary-provider failure falls back automatically. A single provider is a single point of failure
+- **Telemetry from day one:** every query logs cost, token counts, retrieval-vs-generation latency split, best distance, and refusal reason to JSONL
+
+### Measured performance
+
+| Metric | Value |
+|---|---|
+| Cost per answered query | **$0.0047** (~$4.70 / 1,000 queries) |
+| Cost per refused query | **$0.0000** (gated before generation) |
+| Latency — answered | **4.8s** avg (retrieval 0.7–0.9s, generation 3.6–5.2s) |
+| Latency — refused | **0.6–0.9s** (~5× faster) |
+
+Generation dominates latency, not retrieval — a distinction only visible because the split is logged per query rather than as a single total.
+
+### Refusal categories
+
+Refusals are labelled by cause, because each demands a different fix:
+
+| Reason | Meaning |
+|---|---|
+| `distance_gate` | Retrieval too weak — refused before generation |
+| `model_refused` | Retrieval acceptable, but the model judged the context insufficient |
+| `no_chunks` | Search returned nothing |
+| `all_providers_failed` | Infrastructure failure, not a knowledge gap |
+
+A `hedged` flag additionally catches responses that emit the refusal string and then answer anyway — a contradiction that would otherwise corrupt the refusal metric ([INC-006](./INCIDENTS.md)).
 
 ### Engineering log
 
-Five incidents were found and fixed during Phase 1 — every one caught by cross-checking numbers rather than by an error message. See [`INCIDENTS.md`](./INCIDENTS.md).
+Six incidents were found and fixed across Phases 1–2 — every one caught by cross-checking numbers rather than by an error message. See [`INCIDENTS.md`](./INCIDENTS.md) for root causes, and [`DECISIONS.md`](./DECISIONS.md) for the rationale behind each architectural choice.
 
 ## Setup
 
@@ -78,8 +126,22 @@ cd llm-reliability-platform
 # Python 3.11.9 (pinned via .python-version)
 python3 -m venv venv
 source venv/bin/activate
+pip install -r requirements.txt
 
 # Configure secrets
 cp .env.example .env
-# fill in your ANTHROPIC_API_KEY and OPENAI_API_KEY
+# fill in ANTHROPIC_API_KEY, OPENAI_API_KEY, DATABASE_URL
+
+# Start the vector store
+docker compose up -d
+docker compose exec -T db psql -U postgres -d llm_reliability < ingestion/schema.sql
+
+# Build the corpus
+python ingestion/clean_docs.py
+python ingestion/chunk_docs.py
+python ingestion/embed_chunks.py
+python ingestion/load_to_db.py
+
+# Ask a question
+python api/rag.py "how do I set up GitHub authentication?"
 ```
