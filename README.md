@@ -18,7 +18,7 @@ This is the LLM-reliability counterpart to a classical MLOps pipeline: proving t
 |-------|--------|-----|
 | LLM access | Claude (Haiku default) + OpenAI fallback via LiteLLM | Multi-provider = no single point of failure |
 | Vector store | Postgres + pgvector | One boring, proven DB — fewer moving parts |
-| Retrieval | Hybrid (BM25 + vector) + reranker + contextual retrieval | Keywords catch exact terms vectors miss |
+| Retrieval | Hybrid (BM25 + vector) with weighted RRF | Keywords catch exact terms vectors miss |
 | Orchestration | LangGraph | Explicit, debuggable state machine |
 | Observability | OpenTelemetry → Langfuse + Prometheus/Grafana | Instrument once, swap vendors freely |
 | Evaluation | RAGAS + DeepEval + hand-built golden dataset | Every change is measurable |
@@ -34,8 +34,9 @@ Built in public, one phase at a time. Each phase ships a version tag.
 | 0 | Foundation — repo, env, funded keys, smoke test | ✅ `v0.0` |
 | 1 | Document ingestion — clean, chunk, embed, store | ✅ `v1.0` |
 | 2 | Basic RAG — retrieve + cited answers | ✅ `v1.1` |
-| 3 | Retrieval quality — hybrid + rerank | ⬜ |
-| 4–5 | Golden dataset + eval pipeline | ⬜ |
+| 3 | Retrieval quality — hybrid search + diversity | ✅ `v1.2` |
+| 4 | Golden dataset — hand-written Q/A pairs | ⬜ |
+| 5 | Eval pipeline — RAGAS, DeepEval, baselines | ⬜ |
 | 6 | Observability (the heart) | ⬜ |
 | 7 | Orchestration — LangGraph | ⬜ |
 | 8 | Safety — Guardrails | ⬜ |
@@ -45,8 +46,9 @@ Built in public, one phase at a time. Each phase ships a version tag.
 
 ## Data Pipeline (Phase 1 — `v1.0`)
 
+```
 811 source .mdx → 792 clean docs → 2,654 chunks → 2,654 embeddings → Postgres
-
+```
 
 - **Source:** `apps/docs/content` from the [supabase/supabase](https://github.com/supabase/supabase) monorepo, pinned to commit `5b68af17` — the corpus is reproducible, not scraped
 - **Cleaning:** custom MDX preprocessor — strips component tags, protects code blocks, extracts metadata, filters nav-only pages
@@ -77,11 +79,10 @@ Answerable questions retrieve at **0.28–0.48**; out-of-scope questions at **0.
 Retrieved chunks are grounded into cited answers, with refusal treated as correct behaviour rather than failure.
 
 ```
-question → embed → retrieve top-5 → distance gate → grounded prompt → cited answer
-                                          ↓ (> 0.65)
-                                       refuse, zero cost
+question → retrieve top-5 → distance gate → grounded prompt → cited answer
+                                  ↓ (> 0.65)
+                               refuse, zero cost
 ```
-
 
 - **Grounding:** the system prompt permits answers only from retrieved context, requires a citation on every claim, and specifies an exact refusal sentence — a fixed string is machine-detectable, which makes refusal rate a metric rather than a hope
 - **Calibrated refusal:** when the best retrieval distance exceeds 0.65, the query is refused **before the LLM is called** — a cheap deterministic signal gating an expensive stochastic one
@@ -112,9 +113,47 @@ Refusals are labelled by cause, because each demands a different fix:
 
 A `hedged` flag additionally catches responses that emit the refusal string and then answer anyway — a contradiction that would otherwise corrupt the refusal metric ([INC-006](./INCIDENTS.md)).
 
+## Retrieval Quality (Phase 3 — `v1.2`)
+
+Semantic search alone has a specific blind spot: it blurs exact tokens. Error codes, function names and config keys carry little learned meaning, so they map to a generic "technical identifier" region where every error code looks alike.
+
+```
+question ─┬─ vector search (top 10) ─┐
+          └─ BM25 search   (top 10) ─┴─ weighted RRF → diversity cap → top 5
+```
+
+- **Hybrid retrieval:** vector search handles paraphrase and intent; BM25 handles exact tokens. They fail in opposite directions, so fusing them covers both
+- **Weighted RRF:** rankings are fused by position, not score — cosine distance and BM25 scores aren't comparable, and normalising means choosing an arbitrary mapping that biases one retriever. Vector is weighted 1.0 as the primary retriever; BM25 0.5 as a specialist that rescues exact-token queries without overriding good semantic results
+- **Diversity cap:** at most 2 chunks per document. Queries routinely returned 3–4 chunks from one source, so five slots carried a single document's worth of evidence
+
+### Measured: the exact-token case
+
+Searching the error code `PGRST116`:
+
+| Retriever | Behaviour |
+|---|---|
+| BM25 | Correct doc scored **7.47**; every other chunk scored **0.00** — one document contains that token, so it is certain |
+| Vector | Correct doc first at **0.539**, but geospatial-routing docs at **0.642** and a *different* error code (PGRST106) at **0.652** — only 0.11 separating right from wrong |
+| Hybrid | Correct doc first, at **2× the score** of anything else, because both retrievers agreed |
+
+Before Phase 3 this query produced a generic answer. It now answers: *"PGRST116 is a 406 error that occurs when more than 1 or no items are returned when requesting a singular response."*
+
+### Built, measured, and not shipped
+
+Two further changes were implemented and then deliberately left out of the pipeline:
+
+| Change | Result | Decision |
+|---|---|---|
+| Cross-encoder reranker | Ranked the PGRST106 page above the page containing PGRST116; added ~5s per query against a 4.8s baseline | Not shipped — [DEC-014](./DECISIONS.md) |
+| Document-type boost for problem queries | Promoted a chunk both retrievers ranked poorly (vector #10, BM25 #7) to first, pushing the canonical guide out of the top five | Built but disabled — [DEC-015](./DECISIONS.md) |
+
+**Two of four retrieval changes this phase made results worse.** They were caught by checking — but the checking was eyeballing two or three queries per change, which is not measurement. The two changes with clear, repeatable wins shipped; the rest are parked behind config constants until the golden dataset can decide with numbers.
+
+This is the argument for Phase 4: you cannot improve what you cannot measure, and an unmeasured "improvement" is how a system quietly gets worse.
+
 ### Engineering log
 
-Six incidents were found and fixed across Phases 1–2 — every one caught by cross-checking numbers rather than by an error message. See [`INCIDENTS.md`](./INCIDENTS.md) for root causes, and [`DECISIONS.md`](./DECISIONS.md) for the rationale behind each architectural choice.
+Seven incidents and three observations are recorded across Phases 1–3 — every one surfaced by cross-checking numbers rather than by an error message. See [`INCIDENTS.md`](./INCIDENTS.md) for root causes and [`DECISIONS.md`](./DECISIONS.md) for the rationale behind each architectural choice.
 
 ## Setup
 
@@ -137,11 +176,14 @@ docker compose up -d
 docker compose exec -T db psql -U postgres -d llm_reliability < ingestion/schema.sql
 
 # Build the corpus
-python ingestion/clean_docs.py
-python ingestion/chunk_docs.py
-python ingestion/embed_chunks.py
-python ingestion/load_to_db.py
+python -m ingestion.clean_docs
+python -m ingestion.chunk_docs
+python -m ingestion.embed_chunks
+python -m ingestion.load_to_db
 
 # Ask a question
-python api/rag.py "how do I set up GitHub authentication?"
+python -m api.rag "how do I set up GitHub authentication?"
+
+# Or inspect retrieval on its own
+python -m retrieval.hybrid_search "PGRST116"
 ```
