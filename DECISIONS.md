@@ -137,3 +137,13 @@ A running log of architectural decisions, the alternatives considered, and the r
 **Why not swap models immediately:** two eyeballed queries is not evidence. Choosing between rerankers without an eval set means changing a latency-doubling component on intuition.
 
 **Parked:** Phase 5 compares no-rerank / local / Cohere against the golden dataset and decides with numbers.
+
+## DEC-015 — Document-type boost built but not enabled
+
+**Decision:** Detect problem-shaped questions and boost troubleshooting chunks — implemented, measured, left disabled (`TROUBLESHOOT_BOOST = 1.0`).
+
+**Rejected alternative:** A hard filter restricting problem queries to troubleshooting docs. Testing showed the best answer to "why am I getting RLS errors" was the Row Level Security *guide* — a filter would have discarded it. Metadata is a prior, not a gate.
+
+**Why disabled:** At 1.3× the boost promoted a chunk both retrievers ranked poorly (vector #10, BM25 #7) to first place, pushing the canonical RLS guide out of the top five entirely. Lowering to 1.1× changed the scores but not the order — the boost was amplifying an existing flaw rather than causing it: the "found by both retrievers" bonus pays more than ranking first in one. Third occurrence of that pattern this phase.
+
+**Kept:** the detector and the boost code. One constant re-enables it once the eval set can measure whether it helps.

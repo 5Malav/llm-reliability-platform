@@ -1,7 +1,7 @@
 """
 RAG pipeline: question -> retrieve -> ground -> cited answer.
 
-Run:  python api/rag.py "how do I set up GitHub auth?"
+Run:  python -m api.rag "how do I set up GitHub auth?"
 """
 
 import sys
@@ -10,7 +10,7 @@ import time
 from dotenv import load_dotenv
 from litellm import completion
 
-from retrieval.search import search
+from retrieval.hybrid_search import hybrid_search
 from api.prompts import SYSTEM_PROMPT, build_user_message
 from monitoring.logger import log_query
 
@@ -39,17 +39,17 @@ def answer(question, top_k=TOP_K):
     """Answer a question from retrieved documentation. Returns a result dict."""
     start = time.time()
 
-    # 1. Retrieve
-    chunks = search(question, top_k=top_k)
+    # 1. Retrieve — hybrid (vector + BM25, fused, diversity-capped)
+    chunks = hybrid_search(question, top_k=top_k)
     retrieval_time = time.time() - start
 
     base = {
         "question": question,
         "sources": [
-            {"n": i, "title": c["title"], "url": c["url"], "distance": c["distance"]}
+            {"n": i, "title": c["title"], "url": c["url"], "distance": c.get("distance")}
             for i, c in enumerate(chunks, 1)
         ],
-        "best_distance": chunks[0]["distance"] if chunks else None,
+        "best_distance": chunks[0].get("distance") if chunks else None,
         "retrieval_seconds": round(retrieval_time, 3),
         "input_tokens": 0,
         "output_tokens": 0,
@@ -63,7 +63,10 @@ def answer(question, top_k=TOP_K):
                 "total_seconds": round(time.time() - start, 3)}
 
     # 4.3 — Retrieval too weak: refuse WITHOUT calling the LLM
-    if chunks[0]["distance"] > DISTANCE_THRESHOLD:
+    # Hybrid results may not carry a distance (BM25-only hits), so gate only
+    # when we actually have one.
+    best = chunks[0].get("distance")
+    if best is not None and best > DISTANCE_THRESHOLD:
         return {**base, "answer": REFUSAL, "refused": True, "refusal_reason": "distance_gate",
                 "total_seconds": round(time.time() - start, 3)}
 
@@ -112,7 +115,7 @@ def answer(question, top_k=TOP_K):
 
 def main():
     if len(sys.argv) < 2:
-        print('Usage: python api/rag.py "your question"')
+        print('Usage: python -m api.rag "your question"')
         return
 
     result = answer(sys.argv[1])
@@ -125,10 +128,12 @@ def main():
     print("\nSOURCES:")
     for s in result["sources"]:
         link = s["url"] or "(no direct link — documentation fragment)"
-        print(f"  [{s['n']}] {s['title']}  ({s['distance']:.3f})")
+        dist = f"{s['distance']:.3f}" if s["distance"] is not None else "  -  "
+        print(f"  [{s['n']}] {s['title']}  ({dist})")
         print(f"      {link}")
 
-    print(f"\nbest distance : {result['best_distance']:.4f}")
+    best = result["best_distance"]
+    print(f"\nbest distance : {best:.4f}" if best is not None else "\nbest distance : n/a")
     print(f"tokens        : {result['input_tokens']} in / {result['output_tokens']} out")
     print(f"timing        : retrieval {result['retrieval_seconds']}s | "
           f"llm {result['llm_seconds']}s | total {result['total_seconds']}s")
