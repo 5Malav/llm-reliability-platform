@@ -125,3 +125,15 @@ A running log of architectural decisions, the alternatives considered, and the r
 **Rejected alternatives:** CSV (rigid schema), a database (over-engineering for append-only telemetry at this volume).
 
 **Why:** Append-only, crash-safe (a failed write costs one line), schema-flexible (new fields don't break old rows), and directly loadable into pandas or a dashboard. Instrumenting from the first working version means Phase 6 reads a log rather than retrofitting instrumentation into code not designed for it.
+
+## DEC-014 — Reranking built but not shipped
+
+**Decision:** Implement a local cross-encoder reranker, measure it, and leave it out of the pipeline.
+
+**Rejected alternatives:** Shipping it anyway (standard practice in RAG tutorials). Cohere Rerank — better quality, but ~$0.001/search would raise cost per answered query from $0.0047 to $0.0057, for a gain not yet measurable.
+
+**Why not shipped:** On both test queries it degraded results — ranking a page about PGRST106 above the page containing PGRST116, and a "converted GitHub account to organisation" troubleshooting page above the Login with GitHub guide. It also added ~5s per query against a ~4.8s baseline, roughly doubling response time. The model (ms-marco-MiniLM) is trained on web-search passages; this corpus is technical documentation with tables and code.
+
+**Why not swap models immediately:** two eyeballed queries is not evidence. Choosing between rerankers without an eval set means changing a latency-doubling component on intuition.
+
+**Parked:** Phase 5 compares no-rerank / local / Cohere against the golden dataset and decides with numbers.

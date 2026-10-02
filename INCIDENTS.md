@@ -79,3 +79,10 @@ Real failures encountered building and running this system, in SRE post-mortem s
 - **Fix:** (1) Prompt Rule 3 now states the refusal must be the entire response. (2) `is_refusal()` requires the response to be short as well as prefix-matching. (3) Added a separate `hedged` flag that records the contradiction when it still occurs.
 - **Residual:** The hedge still occurs on this query after the prompt fix, but is now correctly classified (`refused=False`, `hedged=True`) rather than miscounted. The behavior is visible instead of hidden — a known issue with a metric attached, not a silent one.
 - **Prevention:** Any string-matched behavior needs a check that the match *is* the whole behavior, not merely its prefix.
+
+### OBS-003 — Cross-encoder reranker degraded retrieval on this corpus
+
+- **Date:** 2026-10-02
+- **Observation:** `ms-marco-MiniLM-L-6-v2` reranking made results worse on both test queries, promoting topically-similar but incorrect pages above pages containing the actual answer. Added ~5s per query.
+- **Suspected cause:** domain mismatch — model trained on web-search passages, applied to technical documentation with tables, code blocks and reference material. It appears to favour short focused troubleshooting pages over longer reference docs.
+- **Action:** not shipped. Revisit with measurement in Phase 5.
