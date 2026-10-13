@@ -21,7 +21,7 @@ This is the LLM-reliability counterpart to a classical MLOps pipeline: proving t
 | Retrieval | Hybrid (BM25 + vector) with weighted RRF | Keywords catch exact terms vectors miss |
 | Orchestration | LangGraph | Explicit, debuggable state machine |
 | Observability | OpenTelemetry → Langfuse + Prometheus/Grafana | Instrument once, swap vendors freely |
-| Evaluation | RAGAS + DeepEval + hand-built golden dataset | Every change is measurable |
+| Evaluation | Hand-built golden dataset + RAGAS + DeepEval | Every change is measurable |
 | Safety | Guardrails AI | Injection + PII filtering at input and output |
 | Infra | FastAPI · Docker · Cloud Run · GitHub Actions · Terraform | Reused, battle-tested stack |
 
@@ -35,14 +35,29 @@ Built in public, one phase at a time. Each phase ships a version tag.
 | 1 | Document ingestion — clean, chunk, embed, store | ✅ `v1.0` |
 | 2 | Basic RAG — retrieve + cited answers | ✅ `v1.1` |
 | 3 | Retrieval quality — hybrid search + diversity | ✅ `v1.2` |
-| 4 | Golden dataset — hand-written Q/A pairs | ⬜ |
-| 5 | Eval pipeline — RAGAS, DeepEval, baselines | ⬜ |
+| 4 | Golden dataset — 120 hand-written questions | ✅ `v1.3` |
+| 5 | Eval pipeline — RAGAS, DeepEval, scoring | ⬜ |
 | 6 | Observability (the heart) | ⬜ |
 | 7 | Orchestration — LangGraph | ⬜ |
 | 8 | Safety — Guardrails | ⬜ |
 | 9 | Fine-tuning — RAG vs fine-tune comparison | ⬜ |
 | 10 | Production deploy — CI/CD with eval gates | ⬜ |
 | 11 | Storytelling — incident log, blog, launch | ⬜ |
+
+## Current baseline
+
+Measured against 120 hand-written questions. These are the honest numbers, not the aspirational ones.
+
+| Metric | Result |
+|---|---|
+| Answerable questions correctly answered | **78 / 85** (92%) |
+| Answerable questions **wrongly refused** | **7 / 85** (8%) |
+| Unanswerable questions correctly refused | **17 / 35** (49%) |
+| Unanswerable questions **wrongly answered** | **18 / 35** (51%) |
+| Cost per question | **$0.0039** |
+| Full 120-question eval run | **$0.47 · 7.8 min** |
+
+The project's headline claim is calibrated refusal. Measured at baseline, refusal is correct **49%** of the time. Phase 5 exists to move that number — and to prove the movement rather than assert it.
 
 ## Data Pipeline (Phase 1 — `v1.0`)
 
@@ -57,48 +72,20 @@ Built in public, one phase at a time. Each phase ships a version tag.
 - **Embeddings:** `text-embedding-3-small` (1536d), batched 100/call, resumable, ~$0.023 for the full corpus
 - **Storage:** Postgres 16 + pgvector in Docker; idempotent upsert on `chunk_id`
 
-### Retrieval — measured behaviour
-
-Across a test set of 8 queries, retrieval distance separates answerable from out-of-scope questions cleanly:
-
-| Query | Distance | Outcome |
-|---|---|---|
-| "how do I deploy an edge function?" | **0.28** | answered |
-| "how do I set up GitHub authentication?" | **0.38** | answered |
-| "how do I upload a file to storage?" | **0.39** | answered |
-| "what is Row Level Security?" | **0.40** | answered |
-| "how do I create a database function?" | **0.41** | answered |
-| "why am I getting row level security errors?" | **0.48** | answered |
-| "how do I make a pizza?" *(out of scope)* | **0.72** | refused |
-| "what is the capital of France?" *(out of scope)* | **0.83** | refused |
-
-Answerable questions retrieve at **0.28–0.48**; out-of-scope questions at **0.72+**. A ~0.25 gap with no overlap. That separation is an externally-computed confidence signal — not the model's self-reported confidence — and it is what the refusal gate acts on.
-
 ## RAG Pipeline (Phase 2 — `v1.1`)
 
 Retrieved chunks are grounded into cited answers, with refusal treated as correct behaviour rather than failure.
 
 ```
 question → retrieve top-5 → distance gate → grounded prompt → cited answer
-                                  ↓ (> 0.65)
-                               refuse, zero cost
+                                  |
+                                  +-- distance > 0.65: refuse, zero cost
 ```
 
 - **Grounding:** the system prompt permits answers only from retrieved context, requires a citation on every claim, and specifies an exact refusal sentence — a fixed string is machine-detectable, which makes refusal rate a metric rather than a hope
 - **Calibrated refusal:** when the best retrieval distance exceeds 0.65, the query is refused **before the LLM is called** — a cheap deterministic signal gating an expensive stochastic one
 - **Provider failover:** all calls route through LiteLLM; a primary-provider failure falls back automatically. A single provider is a single point of failure
 - **Telemetry from day one:** every query logs cost, token counts, retrieval-vs-generation latency split, best distance, and refusal reason to JSONL
-
-### Measured performance
-
-| Metric | Value |
-|---|---|
-| Cost per answered query | **$0.0047** (~$4.70 / 1,000 queries) |
-| Cost per refused query | **$0.0000** (gated before generation) |
-| Latency — answered | **4.8s** avg (retrieval 0.7–0.9s, generation 3.6–5.2s) |
-| Latency — refused | **0.6–0.9s** (~5× faster) |
-
-Generation dominates latency, not retrieval — a distinction only visible because the split is logged per query rather than as a single total.
 
 ### Refusal categories
 
@@ -118,8 +105,9 @@ A `hedged` flag additionally catches responses that emit the refusal string and 
 Semantic search alone has a specific blind spot: it blurs exact tokens. Error codes, function names and config keys carry little learned meaning, so they map to a generic "technical identifier" region where every error code looks alike.
 
 ```
-question ─┬─ vector search (top 10) ─┐
-          └─ BM25 search   (top 10) ─┴─ weighted RRF → diversity cap → top 5
+question --+-- vector search (top 10) --+
+           |                            +-- weighted RRF -> diversity cap -> top 5
+           +-- BM25 search   (top 10) --+
 ```
 
 - **Hybrid retrieval:** vector search handles paraphrase and intent; BM25 handles exact tokens. They fail in opposite directions, so fusing them covers both
@@ -140,7 +128,7 @@ Before Phase 3 this query produced a generic answer. It now answers: *"PGRST116 
 
 ### Built, measured, and not shipped
 
-Two further changes were implemented and then deliberately left out of the pipeline:
+Two changes were implemented and then deliberately left out of the pipeline:
 
 | Change | Result | Decision |
 |---|---|---|
@@ -149,11 +137,36 @@ Two further changes were implemented and then deliberately left out of the pipel
 
 **Two of four retrieval changes this phase made results worse.** They were caught by checking — but the checking was eyeballing two or three queries per change, which is not measurement. The two changes with clear, repeatable wins shipped; the rest are parked behind config constants until the golden dataset can decide with numbers.
 
-This is the argument for Phase 4: you cannot improve what you cannot measure, and an unmeasured "improvement" is how a system quietly gets worse.
+## Golden Dataset (Phase 4 — `v1.3`)
+
+120 question/answer pairs, written by hand against the real corpus. No LLM generation — an auto-generated set only tests whether the system agrees with another model.
+
+| Category | Count | What it tests |
+|---|---:|---|
+| `simple_lookup` | 40 | Basic retrieval and citation |
+| `multi_step` | 25 | Whether multiple relevant chunks are assembled correctly |
+| `exact_token` | 20 | Bare strings (`aal2`, `42501`, `maybeSingle()`) — hybrid/BM25 specifically |
+| `unanswerable` | 35 | Calibrated refusal — the project's core claim |
+
+Unanswerable questions are 29% of the set deliberately. A set that is 95% answerable can score well while refusing nothing correctly.
+
+Exact-token questions are written as **bare strings**, not as "what does X do?" — natural-language phrasing is answered by vector search regardless, so it would not test the thing BM25 exists for.
+
+### What the first run found
+
+The baseline run surfaced two failures in eight minutes that weeks of spot-checking had missed.
+
+**1. Two features in conflict.** All seven wrongly-refused questions were bare-token `exact_token` queries. The 0.65 distance gate was tuned on sentence-shaped questions (0.28–0.48 cosine distance); a bare token carries no sentence context, so it lands further out and is gated before the model ever sees it. BM25 had already found the correct chunk — the gate didn't consider that.
+
+**2. Refusal is weaker than claimed.** 51% of unanswerable questions were answered rather than refused. The worst cluster was cross-product questions about Firebase — the corpus discusses third-party auth, so the model finds adjacent content and speaks from it.
+
+### Known weakness in the dataset itself
+
+Most unanswerable questions use absolute phrasing — "exact", "guaranteed", "every", "confidential" — which makes them *easy* refusals. The hard ones are mild and ordinary, the kind a developer would type without suspecting the answer isn't documented. One mild question in the set ("what is Supabase's uptime SLA for the Free plan?") produced a **hedge** rather than a clean refusal. A future revision should weight toward mild refusals, which is where hallucination actually occurs.
 
 ### Engineering log
 
-Seven incidents and three observations are recorded across Phases 1–3 — every one surfaced by cross-checking numbers rather than by an error message. See [`INCIDENTS.md`](./INCIDENTS.md) for root causes and [`DECISIONS.md`](./DECISIONS.md) for the rationale behind each architectural choice.
+Seven incidents and three observations are recorded across Phases 1–4 — every one surfaced by cross-checking numbers rather than by an error message. See [`INCIDENTS.md`](./INCIDENTS.md) for root causes and [`DECISIONS.md`](./DECISIONS.md) for the rationale behind each architectural choice.
 
 ## Setup
 
@@ -184,6 +197,12 @@ python -m ingestion.load_to_db
 # Ask a question
 python -m api.rag "how do I set up GitHub authentication?"
 
-# Or inspect retrieval on its own
+# Inspect retrieval on its own
 python -m retrieval.hybrid_search "PGRST116"
+
+# Run the evaluation suite
+python -m eval.validate_dataset          # check dataset integrity
+python -m eval.run_golden --limit 10     # smoke test (~$0.04)
+python -m eval.run_golden                # full run (~$0.47, 8 min)
+python -m eval.summarize                 # read the results
 ```
