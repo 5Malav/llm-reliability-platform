@@ -221,4 +221,5 @@ __marimo__/
 
 
 monitoring/query_log.jsonl
-eval/results/eval/results/
+eval/results/
+.DS_Store

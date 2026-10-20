@@ -28,8 +28,7 @@ REFUSAL = "I don't have information about that in the Supabase documentation I h
 def is_refusal(text):
     """True only if the response IS the refusal, not a preamble to an answer.
 
-    The model sometimes emits the refusal string and then answers anyway,
-    which would log as 'refused' while the user received a full answer (INC-006).
+    The model sometimes emits the refusal string and then answers anyway (INC-006).
     A genuine refusal is short.
     """
     return text.startswith(REFUSAL[:40]) and len(text) < len(REFUSAL) + 100
@@ -50,6 +49,7 @@ def answer(question, top_k=TOP_K):
             for i, c in enumerate(chunks, 1)
         ],
         "best_distance": chunks[0].get("distance") if chunks else None,
+        "best_bm25": max((c.get("bm25_score", 0.0) for c in chunks), default=0.0),
         "retrieval_seconds": round(retrieval_time, 3),
         "input_tokens": 0,
         "output_tokens": 0,
@@ -57,14 +57,13 @@ def answer(question, top_k=TOP_K):
         "model": None,
     }
 
-    # 4.1 — Nothing retrieved at all
+    # Nothing retrieved at all
     if not chunks:
         return {**base, "answer": REFUSAL, "refused": True, "refusal_reason": "no_chunks",
                 "total_seconds": round(time.time() - start, 3)}
 
-    # 4.3 — Retrieval too weak: refuse WITHOUT calling the LLM
-    # Hybrid results may not carry a distance (BM25-only hits), so gate only
-    # when we actually have one.
+    # Retrieval too weak: refuse WITHOUT calling the LLM.
+    # BM25-only hits carry no distance, so gate only when we have one.
     best = chunks[0].get("distance")
     if best is not None and best > DISTANCE_THRESHOLD:
         return {**base, "answer": REFUSAL, "refused": True, "refusal_reason": "distance_gate",
@@ -76,7 +75,7 @@ def answer(question, top_k=TOP_K):
         {"role": "user", "content": build_user_message(question, chunks)},
     ]
 
-    # 3. Generate — with provider failover (4.2)
+    # 3. Generate — with provider failover
     llm_start = time.time()
     used_model = MODEL
     try:
@@ -96,7 +95,7 @@ def answer(question, top_k=TOP_K):
     text = response.choices[0].message.content.strip()
     refused = is_refusal(text)
 
-    # Flag the contradiction: refusal string present, but an answer followed (INC-006)
+    # Refusal string present, but an answer followed (INC-006)
     hedged = text.startswith(REFUSAL[:40]) and not refused
 
     return {
@@ -134,6 +133,7 @@ def main():
 
     best = result["best_distance"]
     print(f"\nbest distance : {best:.4f}" if best is not None else "\nbest distance : n/a")
+    print(f"best bm25     : {result['best_bm25']:.2f}")
     print(f"tokens        : {result['input_tokens']} in / {result['output_tokens']} out")
     print(f"timing        : retrieval {result['retrieval_seconds']}s | "
           f"llm {result['llm_seconds']}s | total {result['total_seconds']}s")

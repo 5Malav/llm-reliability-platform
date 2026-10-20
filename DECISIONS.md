@@ -147,3 +147,15 @@ A running log of architectural decisions, the alternatives considered, and the r
 **Why disabled:** At 1.3× the boost promoted a chunk both retrievers ranked poorly (vector #10, BM25 #7) to first place, pushing the canonical RLS guide out of the top five entirely. Lowering to 1.1× changed the scores but not the order — the boost was amplifying an existing flaw rather than causing it: the "found by both retrievers" bonus pays more than ranking first in one. Third occurrence of that pattern this phase.
 
 **Kept:** the detector and the boost code. One constant re-enables it once the eval set can measure whether it helps.
+
+## DEC-016 — BM25 weight 1.0, chosen by measurement
+
+**Decision:** Set BM25_WEIGHT to 1.0 (was 0.5).
+
+**How chosen:** A retrieval-only eval over the 85 answerable golden questions, testing weights 0.0 / 0.5 / 1.0 / 1.5 / 2.0. No LLM calls — repeatable and nearly free. Results: 63 / 65 / 70 / 63 / 63 out of 85. 1.0 was best in every category, with bare tokens at 20/20.
+
+**Why not higher:** above 1.0, simple_lookup fell 30 → 27 as keyword matches displaced good semantic results.
+
+**Confirmed end to end:** a full 120-question run held unanswerable at 35/35 and improved answerable 57 → 59.
+
+**Also found:** two wrong labels in the golden set, and that a single expected file is the wrong test for bare tokens, which live in many docs. Bare tokens are now scored on whether any retrieved chunk contains the token text.

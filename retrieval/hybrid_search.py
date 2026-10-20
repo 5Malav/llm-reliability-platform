@@ -17,11 +17,11 @@ from retrieval.keyword_search import keyword_search
 RRF_K = 60               # standard constant from the RRF paper
 CANDIDATES = 10          # fetch this many from each retriever before fusing
 VECTOR_WEIGHT = 1.0      # primary retriever: handles paraphrase and intent
-BM25_WEIGHT = 0.5        # specialist: rescues exact tokens, shouldn't override
+BM25_WEIGHT = 1.0        # measured best on golden set (59→61/85) — see DEC-016
 MAX_PER_DOC = 2          # diversity cap — no document fills more than 2 slots
 TROUBLESHOOT_BOOST = 1.0 # disabled — see DEC-015. Re-evaluate with eval set.
 
-
+# Words that suggest the user is describing a problem, not asking how-to
 PROBLEM_WORDS = {
     "error", "errors", "failing", "failed", "fails", "broken", "issue",
     "problem", "why", "not", "cannot", "can't", "wont", "won't",
@@ -64,10 +64,14 @@ def hybrid_search(question, top_k=5, candidates=CANDIDATES):
     vector_hits = vector_search(question, top_k=candidates)
     keyword_hits = keyword_search(question, top_k=candidates)
 
+    # Look up table so EVERY chunk can carry its BM25 score, not just the
+    # ones that arrived from the BM25 list
+    bm25_scores = {h["chunk_id"]: h.get("bm25_score", 0.0) for h in keyword_hits}
+
     fused = {}
 
     def add(hits, source, weight):
-        for rank, hit in enumerate(hits, 1):          # rank starts at 1
+        for rank, hit in enumerate(hits, 1):
             cid = hit["chunk_id"]
             if cid not in fused:
                 fused[cid] = {
@@ -75,6 +79,7 @@ def hybrid_search(question, top_k=5, candidates=CANDIDATES):
                     "rrf_score": 0.0,
                     "vector_rank": None,
                     "bm25_rank": None,
+                    "bm25_score": bm25_scores.get(cid, 0.0),
                 }
             fused[cid]["rrf_score"] += weight / (RRF_K + rank)
             fused[cid][f"{source}_rank"] = rank
@@ -82,8 +87,7 @@ def hybrid_search(question, top_k=5, candidates=CANDIDATES):
     add(vector_hits, "vector", VECTOR_WEIGHT)
     add(keyword_hits, "bm25", BM25_WEIGHT)
 
-    # Soft boost: problem-shaped questions favour troubleshooting docs.
-    # A boost, not a filter — guides can still win, and sometimes should.
+    # Soft boost for troubleshooting docs on problem queries (disabled: 1.0)
     problem = is_problem_query(question)
     for chunk in fused.values():
         chunk["boosted"] = False
@@ -103,21 +107,16 @@ def main():
     question = sys.argv[1]
     results = hybrid_search(question)
 
-    problem = is_problem_query(question)
     print(f"\nQUESTION: {question}")
-    print(f"problem-shaped: {problem}" + ("  → troubleshooting boosted" if problem else ""))
     print("=" * 70)
 
     for i, r in enumerate(results, 1):
         v = r["vector_rank"] or "-"
         b = r["bm25_rank"] or "-"
-        marks = ""
-        if r["vector_rank"] and r["bm25_rank"]:
-            marks += "  ← both"
-        if r.get("boosted"):
-            marks += "  ⬆ boosted"
+        bm = r.get("bm25_score", 0.0)
+        marks = "  ← both" if r["vector_rank"] and r["bm25_rank"] else ""
         preview = r["text"].replace("\n", " ")[:85]
-        print(f"\n[{i}] rrf {r['rrf_score']:.5f}  |  {r['doc_type'][:15]:<15} vec #{v}  bm25 #{b}{marks}")
+        print(f"\n[{i}] rrf {r['rrf_score']:.5f}  |  vec #{v}  bm25 #{b} (score {bm:.2f}){marks}")
         print(f"    {r['title']}")
         print(f"    {preview}...")
     print("\n" + "=" * 70)

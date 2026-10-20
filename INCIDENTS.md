@@ -86,3 +86,36 @@ Real failures encountered building and running this system, in SRE post-mortem s
 - **Observation:** `ms-marco-MiniLM-L-6-v2` reranking made results worse on both test queries, promoting topically-similar but incorrect pages above pages containing the actual answer. Added ~5s per query.
 - **Suspected cause:** domain mismatch — model trained on web-search passages, applied to technical documentation with tables, code blocks and reference material. It appears to favour short focused troubleshooting pages over longer reference docs.
 - **Action:** not shipped. Revisit with measurement in Phase 5.
+
+### OBS-004 — BM25 cannot distinguish "mentioned" from "documented"
+
+- **Date:** 2026-10-13
+- **Attempted:** let a strong BM25 score override the distance refusal gate, to fix 7 bare-token queries being wrongly refused.
+- **Why it failed:** "pizza" scores 13.47 against the PostGIS guide, which uses a restaurant example dataset. The term is in the corpus as sample data, not as documentation. BM25 measures lexical presence, not answerability.
+- **Conclusion:** the premise was unsound, not the implementation. Reverted.
+
+### INC-008 — Refusal metric scored correct refusals as hallucinations
+
+- **Date:** 2026-10-20
+- **Symptom:** baseline reported 18 of 35 unanswerable questions answered — 51% failure on the project's headline claim.
+- **Impact:** the README published a refusal accuracy of 49%. The real figure was 100%. The metric, not the system, was failing.
+- **Root cause:** `is_refusal()` required the response to be under ~190 characters. All 18 "failures" opened with the exact refusal sentence and then added a line about what the documentation did cover. Longer than the limit, so scored as answered.
+- **Fix:** hedges count as declines in scoring; hedge rate tracked as a separate metric. README corrected publicly.
+- **Prevention:** read failures before fixing them. We were one step from rewriting the prompt to solve a hallucination problem that did not exist.
+
+### INC-009 — Golden dataset labels wrong; bare-token test too strict
+
+- **Date:** 2026-10-20
+- **Symptom:** 10 of 20 bare-token questions appeared to miss the correct document.
+- **Root cause:** two labels were wrong (`maybeSingle` lives only in `generating-types.mdx`; `SUPABASE_SERVICE_ROLE_KEY` was absent from its labelled file). And most tokens appear in 4+ documents, so requiring one specific file marked correct retrievals as misses.
+- **Fix:** corrected both labels; bare tokens now scored on whether any retrieved chunk contains the token text. Result: 20 / 20.
+- **Prevention:** validating that a labelled file *exists* is not validating that it *contains the answer*. Check labels against the corpus with grep.
+
+### INC-010 — Confirm run measured code that was supposed to be reverted
+
+- **Date:** 2026-10-20
+- **Symptom:** a full eval run was used to confirm a change, but the BM25 override from Step 1 — documented as reverted — was still active in `rag.py`.
+- **Impact:** results (59/65, $0.5052) described different code from what the notes, README and report claimed. Caught before commit.
+- **Root cause:** the revert instruction was never applied, and code state wasn't checked before measuring.
+- **Fix:** reverted properly, verified with `grep`, re-ran: 58/65, 35/35, $0.4761. Out-of-scope questions are gated again, which is where the $0.03 saving comes from.
+- **Prevention:** check the code is in the expected state *before* a measurement run, not after. A number is only as trustworthy as the code it was measured against.

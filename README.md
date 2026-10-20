@@ -21,7 +21,7 @@ This is the LLM-reliability counterpart to a classical MLOps pipeline: proving t
 | Retrieval | Hybrid (BM25 + vector) with weighted RRF | Keywords catch exact terms vectors miss |
 | Orchestration | LangGraph | Explicit, debuggable state machine |
 | Observability | OpenTelemetry → Langfuse + Prometheus/Grafana | Instrument once, swap vendors freely |
-| Evaluation | Hand-built golden dataset + RAGAS + DeepEval | Every change is measurable |
+| Evaluation | Hand-built golden dataset + retrieval and end-to-end evals | Every change is measurable |
 | Safety | Guardrails AI | Injection + PII filtering at input and output |
 | Infra | FastAPI · Docker · Cloud Run · GitHub Actions · Terraform | Reused, battle-tested stack |
 
@@ -36,7 +36,7 @@ Built in public, one phase at a time. Each phase ships a version tag.
 | 2 | Basic RAG — retrieve + cited answers | ✅ `v1.1` |
 | 3 | Retrieval quality — hybrid search + diversity | ✅ `v1.2` |
 | 4 | Golden dataset — 120 hand-written questions | ✅ `v1.3` |
-| 5 | Eval pipeline — RAGAS, DeepEval, scoring | ⬜ |
+| 5 | Eval pipeline — measurement fixed, settings tuned | ✅ `v1.4` |
 | 6 | Observability (the heart) | ⬜ |
 | 7 | Orchestration — LangGraph | ⬜ |
 | 8 | Safety — Guardrails | ⬜ |
@@ -44,20 +44,21 @@ Built in public, one phase at a time. Each phase ships a version tag.
 | 10 | Production deploy — CI/CD with eval gates | ⬜ |
 | 11 | Storytelling — incident log, blog, launch | ⬜ |
 
-## Current baseline
+## Current results (`v1.4`)
 
-Measured against 120 hand-written questions. These are the honest numbers, not the aspirational ones.
+Measured against 120 hand-written questions. Full detail in [`eval/REPORT.md`](./eval/REPORT.md).
 
 | Metric | Result |
 |---|---|
-| Answerable questions correctly answered | **78 / 85** (92%) |
-| Answerable questions **wrongly refused** | **7 / 85** (8%) |
-| Unanswerable questions correctly refused | **17 / 35** (49%) |
-| Unanswerable questions **wrongly answered** | **18 / 35** (51%) |
-| Cost per question | **$0.0039** |
-| Full 120-question eval run | **$0.47 · 7.8 min** |
+| Unanswerable questions correctly declined | **35 / 35** |
+| Hallucinated answers | **0** |
+| Answerable questions answered (end to end) | **58 / 65** |
+| Retrieval: expected document in top 5 | **70 / 85** |
+| Retrieval: bare tokens found (`aal2`, `42501`, ...) | **20 / 20** |
+| Hedge rate — declined, then explained what *is* documented | 26 / 100 |
+| Cost per question | **$0.0040** |
 
-The project's headline claim is calibrated refusal. Measured at baseline, refusal is correct **49%** of the time. Phase 5 exists to move that number — and to prove the movement rather than assert it.
+> **Correction.** An earlier version of this README reported 49% refusal accuracy. That number was a measurement error, not a system failure: every one of the 18 "wrongly answered" questions had actually opened with the refusal sentence and then added a line about what the documentation did cover. The detector counted any refusal longer than ~190 characters as a failure. The real figure on the same run was 35 / 35. See [INC-008](./INCIDENTS.md).
 
 ## Data Pipeline (Phase 1 — `v1.0`)
 
@@ -89,8 +90,6 @@ question → retrieve top-5 → distance gate → grounded prompt → cited answ
 
 ### Refusal categories
 
-Refusals are labelled by cause, because each demands a different fix:
-
 | Reason | Meaning |
 |---|---|
 | `distance_gate` | Retrieval too weak — refused before generation |
@@ -98,7 +97,7 @@ Refusals are labelled by cause, because each demands a different fix:
 | `no_chunks` | Search returned nothing |
 | `all_providers_failed` | Infrastructure failure, not a knowledge gap |
 
-A `hedged` flag additionally catches responses that emit the refusal string and then answer anyway — a contradiction that would otherwise corrupt the refusal metric ([INC-006](./INCIDENTS.md)).
+A `hedged` flag additionally marks responses that decline and then explain what the documentation does cover. Hedges count as correct declines but are tracked separately: a hedge is good behaviour, and also the shape hallucination would take if it appeared.
 
 ## Retrieval Quality (Phase 3 — `v1.2`)
 
@@ -111,7 +110,7 @@ question --+-- vector search (top 10) --+
 ```
 
 - **Hybrid retrieval:** vector search handles paraphrase and intent; BM25 handles exact tokens. They fail in opposite directions, so fusing them covers both
-- **Weighted RRF:** rankings are fused by position, not score — cosine distance and BM25 scores aren't comparable, and normalising means choosing an arbitrary mapping that biases one retriever. Vector is weighted 1.0 as the primary retriever; BM25 0.5 as a specialist that rescues exact-token queries without overriding good semantic results
+- **Weighted RRF:** rankings are fused by position, not score — cosine distance and BM25 scores aren't comparable, and normalising means choosing an arbitrary mapping that biases one retriever
 - **Diversity cap:** at most 2 chunks per document. Queries routinely returned 3–4 chunks from one source, so five slots carried a single document's worth of evidence
 
 ### Measured: the exact-token case
@@ -120,53 +119,64 @@ Searching the error code `PGRST116`:
 
 | Retriever | Behaviour |
 |---|---|
-| BM25 | Correct doc scored **7.47**; every other chunk scored **0.00** — one document contains that token, so it is certain |
-| Vector | Correct doc first at **0.539**, but geospatial-routing docs at **0.642** and a *different* error code (PGRST106) at **0.652** — only 0.11 separating right from wrong |
+| BM25 | Correct doc scored **7.47**; every other chunk scored **0.00** |
+| Vector | Correct doc first at **0.539**, but a *different* error code (PGRST106) at **0.652** — only 0.11 separating right from wrong |
 | Hybrid | Correct doc first, at **2× the score** of anything else, because both retrievers agreed |
 
-Before Phase 3 this query produced a generic answer. It now answers: *"PGRST116 is a 406 error that occurs when more than 1 or no items are returned when requesting a singular response."*
-
 ### Built, measured, and not shipped
-
-Two changes were implemented and then deliberately left out of the pipeline:
 
 | Change | Result | Decision |
 |---|---|---|
 | Cross-encoder reranker | Ranked the PGRST106 page above the page containing PGRST116; added ~5s per query against a 4.8s baseline | Not shipped — [DEC-014](./DECISIONS.md) |
-| Document-type boost for problem queries | Promoted a chunk both retrievers ranked poorly (vector #10, BM25 #7) to first, pushing the canonical guide out of the top five | Built but disabled — [DEC-015](./DECISIONS.md) |
-
-**Two of four retrieval changes this phase made results worse.** They were caught by checking — but the checking was eyeballing two or three queries per change, which is not measurement. The two changes with clear, repeatable wins shipped; the rest are parked behind config constants until the golden dataset can decide with numbers.
+| Document-type boost for problem queries | Promoted a chunk both retrievers ranked poorly to first, pushing the canonical guide out of the top five | Built but disabled — [DEC-015](./DECISIONS.md) |
 
 ## Golden Dataset (Phase 4 — `v1.3`)
 
 120 question/answer pairs, written by hand against the real corpus. No LLM generation — an auto-generated set only tests whether the system agrees with another model.
 
-| Category | Count | What it tests |
-|---|---:|---|
-| `simple_lookup` | 40 | Basic retrieval and citation |
-| `multi_step` | 25 | Whether multiple relevant chunks are assembled correctly |
-| `exact_token` | 20 | Bare strings (`aal2`, `42501`, `maybeSingle()`) — hybrid/BM25 specifically |
-| `unanswerable` | 35 | Calibrated refusal — the project's core claim |
+| Category | Count | What it tests | Scored on |
+|---|---:|---|---|
+| `simple_lookup` | 40 | Basic retrieval and citation | Retrieval + answer |
+| `multi_step` | 25 | Whether multiple relevant chunks are assembled | Retrieval + answer |
+| `exact_token` | 20 | Bare strings (`aal2`, `42501`, `maybeSingle()`) | Retrieval only |
+| `unanswerable` | 35 | Calibrated refusal — the project's core claim | Answer only |
 
 Unanswerable questions are 29% of the set deliberately. A set that is 95% answerable can score well while refusing nothing correctly.
 
-Exact-token questions are written as **bare strings**, not as "what does X do?" — natural-language phrasing is answered by vector search regardless, so it would not test the thing BM25 exists for.
+**Known weaknesses in the dataset itself:**
+- Most unanswerable questions use absolute phrasing — "exact", "guaranteed", "confidential" — which makes them *easy* refusals. The hard ones are mild and ordinary. A future revision should weight toward those.
+- Expected-source labels were written by hand and two were found to be wrong in Phase 5. Some remaining retrieval misses are likely label errors.
 
-### What the first run found
+## Evaluation (Phase 5 — `v1.4`)
 
-The baseline run surfaced two failures in eight minutes that weeks of spot-checking had missed.
+Most of this phase was fixing the yardstick, not the system. Three of the four changes were to measurement; one was to the pipeline.
 
-**1. Two features in conflict.** All seven wrongly-refused questions were bare-token `exact_token` queries. The 0.65 distance gate was tuned on sentence-shaped questions (0.28–0.48 cosine distance); a bare token carries no sentence context, so it lands further out and is gated before the model ever sees it. BM25 had already found the correct chunk — the gate didn't consider that.
+### The measurement was wrong
 
-**2. Refusal is weaker than claimed.** 51% of unanswerable questions were answered rather than refused. The worst cluster was cross-product questions about Firebase — the corpus discusses third-party auth, so the model finds adjacent content and speaks from it.
+| Problem | Effect | Fix |
+|---|---|---|
+| Refusal detector required responses under ~190 characters | 18 correct refusals scored as hallucinations | Hedges count as declines, tracked separately |
+| Bare tokens scored on their answers | A bare string isn't a question — the model correctly asks for clarification | Bare tokens scored on retrieval only |
+| Bare tokens required one specific expected file | Most tokens appear in several docs, so correct retrievals counted as misses | Scored on whether any retrieved chunk contains the token |
+| Two expected-source labels were wrong | Real retrievals marked as failures | Corrected after grepping the corpus |
 
-### Known weakness in the dataset itself
+### The one pipeline change
 
-Most unanswerable questions use absolute phrasing — "exact", "guaranteed", "every", "confidential" — which makes them *easy* refusals. The hard ones are mild and ordinary, the kind a developer would type without suspecting the answer isn't documented. One mild question in the set ("what is Supabase's uptime SLA for the Free plan?") produced a **hedge** rather than a clean refusal. A future revision should weight toward mild refusals, which is where hallucination actually occurs.
+A retrieval-only eval — no LLM calls, deterministic, and nearly free — swept the BM25 weight:
+
+| BM25 weight | 0.0 (vector only) | 0.5 (previous) | **1.0** | 1.5 | 2.0 |
+|---|---|---|---|---|---|
+| Expected doc in top 5 | 63 / 85 | 65 / 85 | **70 / 85** | 63 / 85 | 63 / 85 |
+
+1.0 was best in every category. Hybrid retrieval is worth **+7** correct documents over vector search alone — the first measured confirmation that Phase 3 was worth building. Above 1.0, keyword matches displace good semantic results. A full end-to-end run confirmed the change: answerable 57 → 58, unanswerable held at 35 / 35.
+
+### Tried and reverted
+
+Bare tokens score high cosine distance (no sentence context), so the refusal gate blocks them. Letting a strong BM25 score override the gate failed: "pizza" scores 13.47 against the PostGIS guide, which uses a restaurant example dataset. **Keyword presence is not evidence of answerability.** Reverted — [OBS-004](./INCIDENTS.md).
 
 ### Engineering log
 
-Seven incidents and three observations are recorded across Phases 1–4 — every one surfaced by cross-checking numbers rather than by an error message. See [`INCIDENTS.md`](./INCIDENTS.md) for root causes and [`DECISIONS.md`](./DECISIONS.md) for the rationale behind each architectural choice.
+Ten incidents and four observations are recorded across Phases 1–5. Every one surfaced by cross-checking numbers rather than by an error message — and two of them were bugs in the evaluation itself. See [`INCIDENTS.md`](./INCIDENTS.md) and [`DECISIONS.md`](./DECISIONS.md).
 
 ## Setup
 
@@ -200,9 +210,9 @@ python -m api.rag "how do I set up GitHub authentication?"
 # Inspect retrieval on its own
 python -m retrieval.hybrid_search "PGRST116"
 
-# Run the evaluation suite
-python -m eval.validate_dataset          # check dataset integrity
-python -m eval.run_golden --limit 10     # smoke test (~$0.04)
-python -m eval.run_golden                # full run (~$0.47, 8 min)
-python -m eval.summarize                 # read the results
+# Evaluate
+python -m eval.validate_dataset     # dataset integrity
+python -m eval.retrieval_eval       # retrieval sweep — free, ~7 min
+python -m eval.run_golden           # full end-to-end run — ~$0.50, ~8 min
+python -m eval.summarize            # end-to-end results
 ```
