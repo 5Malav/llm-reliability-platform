@@ -1,0 +1,9 @@
+# Load every dashboard JSON in this folder on startup
+apiVersion: 1
+
+providers:
+  - name: rag
+    type: file
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

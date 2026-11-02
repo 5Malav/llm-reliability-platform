@@ -119,3 +119,11 @@ Real failures encountered building and running this system, in SRE post-mortem s
 - **Root cause:** the revert instruction was never applied, and code state wasn't checked before measuring.
 - **Fix:** reverted properly, verified with `grep`, re-ran: 58/65, 35/35, $0.4761. Out-of-scope questions are gated again, which is where the $0.03 saving comes from.
 - **Prevention:** check the code is in the expected state *before* a measurement run, not after. A number is only as trustworthy as the code it was measured against.
+
+### OBS-005 — BM25 weight 1.0 lets keyword junk into results
+
+- **Date:** 2026-10-28
+- **Observation:** "how do I set up GitHub authentication?" returned Billing FAQ and exhaust-swap in the top 5 — both BM25-only hits, unrelated to the question. Two of five slots wasted.
+- **Cause:** at BM25_WEIGHT 1.0, BM25's top picks compete equally with vector's. For sentence questions, BM25 matches common words ("how", "do", "set", "up") that appear in many docs.
+- **Why the eval missed it:** retrieval_eval measures whether the expected doc is anywhere in the top 5 (it was, at #1). It does not measure how many of the 5 are irrelevant.
+- **Likely fix:** remove stopwords in the BM25 tokenizer, then re-run retrieval_eval. Deferred — retrieval change, not observability work.

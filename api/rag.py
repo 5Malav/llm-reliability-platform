@@ -1,6 +1,9 @@
 """
 RAG pipeline: question -> retrieve -> ground -> cited answer.
 
+Every query is traced to Langfuse as one trace:
+  rag-query  -> retrieval span  -> llm-call generation (unless gated)
+
 Run:  python -m api.rag "how do I set up GitHub auth?"
 """
 
@@ -8,13 +11,17 @@ import sys
 import time
 
 from dotenv import load_dotenv
+
+load_dotenv()   # must run BEFORE the Langfuse client is created — it reads keys once
+
+from langfuse import get_client
 from litellm import completion
 
 from retrieval.hybrid_search import hybrid_search
 from api.prompts import SYSTEM_PROMPT, build_user_message
-from monitoring.logger import log_query
+from monitoring.logger import log_query, COST_PER_1M
 
-load_dotenv()
+langfuse = get_client()
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"   # DEC-002: Haiku default
 TOP_K = 5
@@ -26,90 +33,131 @@ REFUSAL = "I don't have information about that in the Supabase documentation I h
 
 
 def is_refusal(text):
-    """True only if the response IS the refusal, not a preamble to an answer.
-
-    The model sometimes emits the refusal string and then answers anyway (INC-006).
-    A genuine refusal is short.
-    """
+    """True only if the response IS the refusal, not a preamble to an answer (INC-006)."""
     return text.startswith(REFUSAL[:40]) and len(text) < len(REFUSAL) + 100
+
+
+def finish(trace, result):
+    """Attach the final outcome to the trace, then return the result unchanged."""
+    trace.update(
+        output=result["answer"],
+        metadata={
+            "refused": result["refused"],
+            "refusal_reason": result.get("refusal_reason"),
+            "hedged": result.get("hedged", False),
+            "best_distance": result["best_distance"],
+            "best_bm25": result["best_bm25"],
+            "model": result.get("model"),
+            "retrieval_seconds": result["retrieval_seconds"],
+            "llm_seconds": result["llm_seconds"],
+            "total_seconds": result["total_seconds"],
+        },
+    )
+    return result
 
 
 def answer(question, top_k=TOP_K):
     """Answer a question from retrieved documentation. Returns a result dict."""
     start = time.time()
 
-    # 1. Retrieve — hybrid (vector + BM25, fused, diversity-capped)
-    chunks = hybrid_search(question, top_k=top_k)
-    retrieval_time = time.time() - start
+    with langfuse.start_as_current_observation(
+        as_type="span", name="rag-query", input={"question": question}
+    ) as trace:
 
-    base = {
-        "question": question,
-        "sources": [
-            {"n": i, "title": c["title"], "url": c["url"], "distance": c.get("distance")}
-            for i, c in enumerate(chunks, 1)
-        ],
-        "best_distance": chunks[0].get("distance") if chunks else None,
-        "best_bm25": max((c.get("bm25_score", 0.0) for c in chunks), default=0.0),
-        "retrieval_seconds": round(retrieval_time, 3),
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "llm_seconds": 0.0,
-        "model": None,
-    }
+        # 1. Retrieve — hybrid (vector + BM25, fused, diversity-capped)
+        with langfuse.start_as_current_observation(as_type="span", name="retrieval") as span:
+            chunks = hybrid_search(question, top_k=top_k)
+            span.update(output=[
+                {"title": c["title"], "distance": c.get("distance"), "bm25": c.get("bm25_score", 0.0)}
+                for c in chunks
+            ])
+        retrieval_time = time.time() - start
 
-    # Nothing retrieved at all
-    if not chunks:
-        return {**base, "answer": REFUSAL, "refused": True, "refusal_reason": "no_chunks",
-                "total_seconds": round(time.time() - start, 3)}
+        base = {
+            "question": question,
+            "sources": [
+                {"n": i, "title": c["title"], "url": c["url"], "distance": c.get("distance")}
+                for i, c in enumerate(chunks, 1)
+            ],
+            "best_distance": chunks[0].get("distance") if chunks else None,
+            "best_bm25": max((c.get("bm25_score", 0.0) for c in chunks), default=0.0),
+            "retrieval_seconds": round(retrieval_time, 3),
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "llm_seconds": 0.0,
+            "model": None,
+        }
 
-    # Retrieval too weak: refuse WITHOUT calling the LLM.
-    # BM25-only hits carry no distance, so gate only when we have one.
-    best = chunks[0].get("distance")
-    if best is not None and best > DISTANCE_THRESHOLD:
-        return {**base, "answer": REFUSAL, "refused": True, "refusal_reason": "distance_gate",
-                "total_seconds": round(time.time() - start, 3)}
+        # Nothing retrieved at all
+        if not chunks:
+            return finish(trace, {**base, "answer": REFUSAL, "refused": True,
+                                  "refusal_reason": "no_chunks",
+                                  "total_seconds": round(time.time() - start, 3)})
 
-    # 2. Build the grounded prompt
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": build_user_message(question, chunks)},
-    ]
+        # Retrieval too weak: refuse WITHOUT calling the LLM
+        best = chunks[0].get("distance")
+        if best is not None and best > DISTANCE_THRESHOLD:
+            return finish(trace, {**base, "answer": REFUSAL, "refused": True,
+                                  "refusal_reason": "distance_gate",
+                                  "total_seconds": round(time.time() - start, 3)})
 
-    # 3. Generate — with provider failover
-    llm_start = time.time()
-    used_model = MODEL
-    try:
-        response = completion(model=MODEL, messages=messages, max_tokens=MAX_TOKENS)
-    except Exception as primary_error:
-        print(f"  ⚠️  {MODEL} failed ({type(primary_error).__name__}) — falling back to {FALLBACK_MODEL}")
-        try:
-            response = completion(model=FALLBACK_MODEL, messages=messages, max_tokens=MAX_TOKENS)
-            used_model = FALLBACK_MODEL
-        except Exception as fallback_error:
-            return {**base, "answer": "Both providers are currently unavailable. Please try again.",
-                    "refused": True, "refusal_reason": "all_providers_failed",
-                    "error": f"{type(primary_error).__name__} / {type(fallback_error).__name__}",
-                    "total_seconds": round(time.time() - start, 3)}
+        # 2. Build the grounded prompt
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_user_message(question, chunks)},
+        ]
 
-    llm_time = time.time() - llm_start
-    text = response.choices[0].message.content.strip()
-    refused = is_refusal(text)
+        # 3. Generate — traced as a generation, with provider failover
+        llm_start = time.time()
+        with langfuse.start_as_current_observation(
+            as_type="generation", name="llm-call", model=MODEL, input=messages
+        ) as gen:
+            used_model = MODEL
+            try:
+                response = completion(model=MODEL, messages=messages, max_tokens=MAX_TOKENS)
+            except Exception as primary_error:
+                print(f"  ⚠️  {MODEL} failed ({type(primary_error).__name__}) — falling back to {FALLBACK_MODEL}")
+                try:
+                    response = completion(model=FALLBACK_MODEL, messages=messages, max_tokens=MAX_TOKENS)
+                    used_model = FALLBACK_MODEL
+                except Exception as fallback_error:
+                    error = f"{type(primary_error).__name__} / {type(fallback_error).__name__}"
+                    gen.update(metadata={"error": error})
+                    return finish(trace, {**base,
+                                          "answer": "Both providers are currently unavailable. Please try again.",
+                                          "refused": True, "refusal_reason": "all_providers_failed",
+                                          "error": error,
+                                          "total_seconds": round(time.time() - start, 3)})
 
-    # Refusal string present, but an answer followed (INC-006)
-    hedged = text.startswith(REFUSAL[:40]) and not refused
+            text = response.choices[0].message.content.strip()
+            usage = response.usage
+            # Cost uses Haiku prices; a fallback call is cheaper, so this slightly overstates it
+            in_cost = usage.prompt_tokens / 1_000_000 * COST_PER_1M["input"]
+            out_cost = usage.completion_tokens / 1_000_000 * COST_PER_1M["output"]
 
-    return {
-        **base,
-        "answer": text,
-        "refused": refused,
-        "refusal_reason": "model_refused" if refused else None,
-        "hedged": hedged,
-        "model": used_model,
-        "input_tokens": response.usage.prompt_tokens,
-        "output_tokens": response.usage.completion_tokens,
-        "llm_seconds": round(llm_time, 3),
-        "total_seconds": round(time.time() - start, 3),
-    }
+            gen.update(
+                model=used_model,
+                output=text,
+                usage_details={"input": usage.prompt_tokens, "output": usage.completion_tokens},
+                cost_details={"input": in_cost, "output": out_cost},
+            )
+        llm_time = time.time() - llm_start
+
+        refused = is_refusal(text)
+        hedged = text.startswith(REFUSAL[:40]) and not refused   # INC-006
+
+        return finish(trace, {
+            **base,
+            "answer": text,
+            "refused": refused,
+            "refusal_reason": "model_refused" if refused else None,
+            "hedged": hedged,
+            "model": used_model,
+            "input_tokens": usage.prompt_tokens,
+            "output_tokens": usage.completion_tokens,
+            "llm_seconds": round(llm_time, 3),
+            "total_seconds": round(time.time() - start, 3),
+        })
 
 
 def main():
@@ -141,6 +189,8 @@ def main():
     if result.get("hedged"):
         print("⚠️  HEDGED     : refusal string present but an answer followed (INC-006)")
     print(f"model         : {result.get('model') or 'none (gated)'}")
+
+    langfuse.flush()   # send the trace before the script exits
 
 
 if __name__ == "__main__":

@@ -3,26 +3,43 @@ services:
     # Official pgvector image = Postgres 16 with the extension pre-installed
     image: pgvector/pgvector:pg16
     container_name: llm-reliability-db
-
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: llm_reliability
-
     ports:
-      # host:container — connect from your Mac on localhost:5433
       - "5433:5432"
-
     volumes:
-      # Named volume so data survives container restarts
       - pgdata:/var/lib/postgresql/data
-
     healthcheck:
-      # Docker checks the DB is actually accepting connections, not just "started"
       test: ["CMD-SHELL", "pg_isready -U postgres -d llm_reliability"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  prometheus:
+    # Collects metrics from our API every few seconds and stores them over time
+    image: prom/prometheus:v3.13.0
+    container_name: llm-reliability-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    # Dashboards on top of Prometheus
+    image: grafana/grafana:latest
+    container_name: llm-reliability-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   pgdata:
+  grafana-data:

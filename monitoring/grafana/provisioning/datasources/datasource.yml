@@ -1,0 +1,10 @@
+# Tells Grafana where Prometheus is, so no manual setup is needed
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus           # fixed ID — the dashboard file points at this
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
