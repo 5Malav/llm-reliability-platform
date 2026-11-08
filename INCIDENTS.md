@@ -127,3 +127,21 @@ Real failures encountered building and running this system, in SRE post-mortem s
 - **Cause:** at BM25_WEIGHT 1.0, BM25's top picks compete equally with vector's. For sentence questions, BM25 matches common words ("how", "do", "set", "up") that appear in many docs.
 - **Why the eval missed it:** retrieval_eval measures whether the expected doc is anywhere in the top 5 (it was, at #1). It does not measure how many of the 5 are irrelevant.
 - **Likely fix:** remove stopwords in the BM25 tokenizer, then re-run retrieval_eval. Deferred — retrieval change, not observability work.
+
+### INC-012 — Grounding checker read code as citations
+
+- **Date:** 2026-11-08
+- **Symptom:** dashboard showed 2 fake citations after a 120-question replay.
+- **Root cause:** the checker looked for `[n]` across the whole answer, including code. `event.target.files[0]` in a JavaScript sample was counted as a citation to source 0.
+- **How it was caught:** printed the text around each flagged citation before changing anything.
+- **Fix:** remove code blocks and inline code before scoring. Re-checked on all Phase 5 answers: zero false flags; a real out-of-range citation is still caught.
+- **Lesson:** check the checker. A false alarm about hallucination is still a false alarm.
+
+### INC-013 — "Fallback in use" panel missed a fallback
+
+- **Date:** 2026-11-08
+- **Symptom:** metrics showed 1 answer from gpt-4o-mini; the dashboard panel showed 0% and stayed green.
+- **Root cause:** a labelled counter only exists after its first use, so it appeared already at 1. Prometheus measures change and never saw it at 0, so the first event of any new label was invisible.
+- **Fix:** create every known label (outcomes, token types, models) at 0 when the server starts.
+- **Proof:** ran the server with a deliberately broken Claude key; 3 questions fell back; the counter went 0 → 3 and the panel turned red.
+- **Lesson:** test a warning light by switching it on.

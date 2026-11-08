@@ -3,6 +3,7 @@ RAG pipeline: question -> retrieve -> ground -> cited answer.
 
 Every query is traced to Langfuse as one trace:
   rag-query  -> retrieval span  -> llm-call generation (unless gated)
+Every answer gets a grounding score: share of claim sentences that carry a source.
 
 Run:  python -m api.rag "how do I set up GitHub auth?"
 """
@@ -20,6 +21,7 @@ from litellm import completion
 from retrieval.hybrid_search import hybrid_search
 from api.prompts import SYSTEM_PROMPT, build_user_message
 from monitoring.logger import log_query, COST_PER_1M
+from monitoring.quality import grounding
 
 langfuse = get_client()
 
@@ -48,11 +50,21 @@ def finish(trace, result):
             "best_distance": result["best_distance"],
             "best_bm25": result["best_bm25"],
             "model": result.get("model"),
+            "grounding_score": result.get("grounding_score"),
+            "fake_citations": result.get("fake_citations", 0),
             "retrieval_seconds": result["retrieval_seconds"],
             "llm_seconds": result["llm_seconds"],
             "total_seconds": result["total_seconds"],
         },
     )
+    # Grounding as a real Langfuse score, so it can be filtered and charted.
+    # Watching the system must never break it, so failures are ignored.
+    if result.get("grounding_score") is not None:
+        try:
+            trace.score_trace(name="grounding", value=float(result["grounding_score"]),
+                              data_type="NUMERIC")
+        except Exception:
+            pass
     return result
 
 
@@ -86,6 +98,8 @@ def answer(question, top_k=TOP_K):
             "output_tokens": 0,
             "llm_seconds": 0.0,
             "model": None,
+            "grounding_score": None,     # only answers get a score
+            "fake_citations": 0,
         }
 
         # Nothing retrieved at all
@@ -146,6 +160,12 @@ def answer(question, top_k=TOP_K):
         refused = is_refusal(text)
         hedged = text.startswith(REFUSAL[:40]) and not refused   # INC-006
 
+        # 4. Grounding — only for real answers. For a hedge, drop the refusal
+        #    sentence first: it never has a source and would unfairly lower the score.
+        quality = {}
+        if not refused:
+            quality = grounding(text.replace(REFUSAL, ""), len(chunks))
+
         return finish(trace, {
             **base,
             "answer": text,
@@ -157,6 +177,8 @@ def answer(question, top_k=TOP_K):
             "output_tokens": usage.completion_tokens,
             "llm_seconds": round(llm_time, 3),
             "total_seconds": round(time.time() - start, 3),
+            "grounding_score": quality.get("score"),
+            "fake_citations": quality.get("fake_citations", 0),
         })
 
 
@@ -188,6 +210,10 @@ def main():
     print(f"refused       : {result['refused']}  ({result.get('refusal_reason') or 'n/a'})")
     if result.get("hedged"):
         print("⚠️  HEDGED     : refusal string present but an answer followed (INC-006)")
+    g = result.get("grounding_score")
+    print(f"grounding     : {g:.0%} of claims sourced" if g is not None else "grounding     : n/a")
+    if result.get("fake_citations"):
+        print(f"🚩 FAKE CITES : {result['fake_citations']} citation(s) point at sources that don't exist")
     print(f"model         : {result.get('model') or 'none (gated)'}")
 
     langfuse.flush()   # send the trace before the script exits

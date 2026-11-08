@@ -11,14 +11,16 @@ from fastapi import FastAPI, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 
-from api.rag import answer, langfuse
+from api.rag import FALLBACK_MODEL, MODEL, answer, langfuse
 from monitoring.logger import estimate_cost, log_query
-from monitoring.metrics import ERRORS, record
+from monitoring.metrics import ERRORS, init_metrics, record
 from retrieval.keyword_search import keyword_search
 
 
 @asynccontextmanager
 async def lifespan(app):
+    # Startup: create every metric label at 0, so the first event shows up (INC-013)
+    init_metrics([MODEL, FALLBACK_MODEL])
     # Startup: build the BM25 index now, not on the first user's request
     keyword_search("warmup", top_k=1)
     yield
