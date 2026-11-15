@@ -1,0 +1,17 @@
+# GUEST LIST: keep everything out of the Docker box...
+*
+
+# ...except what the API needs (proven by our import check in 7.1.1)
+!api/
+!retrieval/
+!monitoring/
+!requirements-api.txt
+
+# Even inside allowed folders, keep these out
+**/.env*
+**/__pycache__
+**/*.pyc
+**/*.jsonl
+**/.DS_Store
+monitoring/grafana/
+monitoring/prometheus.yml

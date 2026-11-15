@@ -1,0 +1,13 @@
+# Only what the API imports. Local dev still uses requirements.txt.
+# Versions copied from our working venv, so the box matches the Mac.
+
+fastapi==0.162.0
+uvicorn==0.54.0
+pydantic==2.13.4
+litellm==1.99.0
+openai==2.53.0
+langfuse==5.0.4
+prometheus_client==0.26.0
+psycopg2-binary==2.9.12
+rank-bm25==0.2.2
+python-dotenv==1.2.2
