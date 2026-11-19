@@ -7,20 +7,25 @@ Docs: http://localhost:8000/docs
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, HTTPException, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 
+from api.budget import create_table, over_limit
 from api.rag import FALLBACK_MODEL, MODEL, answer, langfuse
 from monitoring.logger import estimate_cost, log_query
-from monitoring.metrics import ERRORS, init_metrics, record
+from monitoring.metrics import DAILY_LIMITED, ERRORS, init_metrics, record
 from retrieval.keyword_search import keyword_search
+
+LIMIT_MESSAGE = "Demo limit reached for today. Please try again tomorrow."
 
 
 @asynccontextmanager
 async def lifespan(app):
     # Startup: create every metric label at 0, so the first event shows up (INC-013)
     init_metrics([MODEL, FALLBACK_MODEL])
+    # Startup: make sure the daily counter's table exists
+    create_table()
     # Startup: build the BM25 index now, not on the first user's request
     keyword_search("warmup", top_k=1)
     yield
@@ -43,10 +48,15 @@ def health():
 @app.post("/ask")
 def ask(body: Question):
     try:
-        result = answer(body.question)
+        limited = over_limit()            # counts this question
+        if not limited:
+            result = answer(body.question)
     except Exception:
-        ERRORS.inc()          # something broke — not a refusal
+        ERRORS.inc()                      # something broke — not a refusal, not a limit
         raise
+    if limited:
+        DAILY_LIMITED.inc()               # shop closed for today: correct behaviour, not an error
+        raise HTTPException(status_code=429, detail=LIMIT_MESSAGE)
     log_query(result)
     record(result, estimate_cost(result["input_tokens"], result["output_tokens"]))
     return result

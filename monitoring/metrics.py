@@ -20,6 +20,10 @@ TOKENS = Counter("rag_tokens_total", "LLM tokens used", ["type"])
 FAKE_CITATIONS = Counter("rag_fake_citations_total", "Citations pointing at sources that don't exist")
 LLM_CALLS = Counter("rag_llm_calls_total", "Answers generated, by the model that produced them", ["model"])
 
+# Kept separate from REQUESTS on purpose: "shop closed for today" is not
+# "the model refused", so it must not inflate the refusal-rate panel.
+DAILY_LIMITED = Counter("rag_daily_limit_total", "Questions turned away by the daily limit (HTTP 429)")
+
 RETRIEVAL_SECONDS = Histogram("rag_retrieval_seconds", "Retrieval latency", buckets=LATENCY_BUCKETS)
 LLM_SECONDS = Histogram("rag_llm_seconds", "LLM latency, only when the LLM was called", buckets=LATENCY_BUCKETS)
 TOTAL_SECONDS = Histogram("rag_total_seconds", "End-to-end latency", buckets=LATENCY_BUCKETS)
