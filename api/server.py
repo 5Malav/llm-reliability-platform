@@ -54,6 +54,10 @@ def ask(body: Question):
     except Exception:
         ERRORS.inc()                      # something broke — not a refusal, not a limit
         raise
+    finally:
+        # Cloud Run freezes the CPU once the response is sent, which strands
+        # background trace exports. Send them now, while we still have CPU.
+        langfuse.flush()
     if limited:
         DAILY_LIMITED.inc()               # shop closed for today: correct behaviour, not an error
         raise HTTPException(status_code=429, detail=LIMIT_MESSAGE)
