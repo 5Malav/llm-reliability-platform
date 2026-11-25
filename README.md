@@ -27,17 +27,36 @@ This is the LLM-reliability counterpart to a classical MLOps pipeline: proving t
 | CI | GitHub Actions: unit tests + retrieval eval gate, required on every pull request | A change that makes search worse cannot merge |
 
 ```mermaid
-flowchart LR
-    U[Visitor] --> CR["Cloud Run · FastAPI<br/>Mumbai, scale-to-zero"]
-    CR -->|hybrid search| DB[("Neon Postgres + pgvector<br/>Singapore")]
-    CR -->|answer, with failover| LLM["Claude, then OpenAI<br/>via LiteLLM"]
-    CR -->|every request| LF["Langfuse<br/>production traces"]
-    SM["Secret Manager"] -. keys .-> CR
-    SCH["Cloud Scheduler"] -. "/health every 10 min" .-> CR
-    PR["Pull request"] --> GH["GitHub Actions<br/>unit tests + eval gate"]
-    GH -->|read-only user| DB
-    GH -->|red blocks the merge| MAIN["main"]
-```
+flowchart TB
+    subgraph BUILD["Build the knowledge base · once"]
+        direction LR
+        DOCS["Supabase docs<br/>811 files"] --> CHUNK["Clean + chunk<br/>2,654 chunks"] --> EMB["Embed<br/>OpenAI"]
+    end
+
+    DB[("Neon Postgres + pgvector")]
+
+    subgraph SERVE["Answer a question · Cloud Run"]
+        direction LR
+        U["Visitor"] --> LIM["Daily limit<br/>100 per day"] --> HS["Hybrid search<br/>BM25 + vector"] --> GATE{"Close<br/>enough?"}
+        GATE -->|no| REF["Refuse · $0"]
+        GATE -->|yes| LLM["Claude, OpenAI fallback<br/>+ grounding check"]
+    end
+
+    subgraph WATCH["Watch it"]
+        direction LR
+        LF["Langfuse<br/>every request traced"] ~~~ PM["Prometheus + Grafana<br/>local dashboard"]
+    end
+
+    subgraph GUARD["Protect quality"]
+        direction LR
+        PR["Pull request"] --> CI["Unit tests +<br/>eval gate"] -->|pass only| MAIN["main"]
+    end
+
+    BUILD --> DB
+    DB --> SERVE
+    SERVE -.-> WATCH
+    GUARD -.->|read-only| DB
+````
 
 ## Progress
 
@@ -53,9 +72,6 @@ Built in public, one phase at a time. Each phase ships a version tag.
 | 5 | Eval pipeline — measurement fixed, settings tuned | ✅ `v1.4` |
 | 6 | Observability — tracing, metrics, dashboards, grounding score | ✅ `v1.5` |
 | 7 | Production — Docker, Neon, Cloud Run, cost guard, production tracing, eval-gated CI | ✅ `v1.6` |
-| 8 | Storytelling — write-up and launch | ⬜ |
-
-**Scope change.** The original plan also had LangGraph orchestration, Guardrails and a fine-tuning comparison. LangGraph and Guardrails moved to the agentic projects that follow this one — agents that call tools are where orchestration and input/output safety earn their place; a single-step docs assistant has little for them to do. Fine-tuning is parked: neither project needs it. Cutting scope on purpose kept this project focused on reliability.
 
 ## What it looks like
 
