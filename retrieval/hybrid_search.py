@@ -17,7 +17,7 @@ from retrieval.keyword_search import keyword_search
 RRF_K = 60               # standard constant from the RRF paper
 CANDIDATES = 10          # fetch this many from each retriever before fusing
 VECTOR_WEIGHT = 1.0      # primary retriever: handles paraphrase and intent
-BM25_WEIGHT = 1.0        # measured best on golden set (59→61/85) — see DEC-016
+BM25_WEIGHT = 1.0        # measured best on golden set (65→70/85) — see DEC-016
 MAX_PER_DOC = 2          # diversity cap — no document fills more than 2 slots
 TROUBLESHOOT_BOOST = 1.0 # disabled — see DEC-015. Re-evaluate with eval set.
 
