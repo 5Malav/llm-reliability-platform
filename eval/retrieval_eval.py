@@ -28,11 +28,23 @@ def hit(r):
     return want in [hs.doc_of(c["chunk_id"]) for c in chunks]
 
 
-for weight in [0.0, 0.5, 1.0, 1.5, 2.0]:
-    hs.BM25_WEIGHT = weight
+def score():
+    """Run every answerable question once, with the current settings."""
     results = {}
     for r in rows:
         results.setdefault(r["category"], []).append(hit(r))
+    return results
+
+
+def summary(results):
+    """One line: total plus each category."""
     total = sum(sum(v) for v in results.values())
     detail = "  ".join(f"{cat} {sum(v)}/{len(v)}" for cat, v in results.items())
-    print(f"BM25_WEIGHT={weight}:  total {total}/{len(rows)}  |  {detail}")
+    return f"BM25_WEIGHT={hs.BM25_WEIGHT}:  total {total}/{len(rows)}  |  {detail}"
+
+
+# Only when run directly: the full weight sweep (importing this file runs nothing)
+if __name__ == "__main__":
+    for weight in [0.0, 0.5, 1.0, 1.5, 2.0]:
+        hs.BM25_WEIGHT = weight
+        print(summary(score()))
