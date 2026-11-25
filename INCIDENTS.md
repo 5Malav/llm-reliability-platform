@@ -145,3 +145,35 @@ Real failures encountered building and running this system, in SRE post-mortem s
 - **Fix:** create every known label (outcomes, token types, models) at 0 when the server starts.
 - **Proof:** ran the server with a deliberately broken Claude key; 3 questions fell back; the counter went 0 → 3 and the panel turned red.
 - **Lesson:** test a warning light by switching it on.
+
+## Phase 7 — Production
+
+### INC-014 — Production traces silently dropped
+- **Found:** checking Langfuse right after the first deploy — 6 of 11 cloud requests had no trace. No errors in any log.
+- **First theory (incomplete):** CPU frozen after the response strands background exports. Added a flush at the end of each request — no change.
+- **Evidence:** Langfuse API confirmed lost, not delayed. SDK debug logs showed unrecorded requests had nothing to export.
+- **Root cause:** Cloud Run attaches a sampled `traceparent` header; our root span inherited it, so unsampled requests were dropped. Impossible to see locally.
+- **Proof:** reproduced on a laptop by sending `traceparent` with sampled=00 — that trace alone went missing.
+- **Fix:** each request starts from an empty OpenTelemetry context. Verified: a fast burst of 5 → 5 of 5 traces.
+- **Lesson:** check observability immediately after deploying; some bugs only exist in production.
+
+### OBS-006 — Docker reads `.env` quotes literally
+Python's dotenv strips quotes; `docker --env-file` keeps them. Quoted Langfuse keys would have reached the container invalid, and tracing would have switched itself off without an error. Caught in a pre-flight check; quotes removed and value lengths verified unchanged.
+
+### OBS-007 — Mobile carrier DNS refused the database host
+The hotspot's DNS answered `REFUSED` for the Neon hostname; Google DNS resolved it. Used another network instead of hardcoding IPs. Affects only the laptop, not the cloud.
+
+### OBS-008 — "Different" fingerprints on identical data
+After migrating, md5 fingerprints differed. Both text and vectors failed together, which pointed to ordering: local collation `en_US.utf8` vs Neon `C.UTF-8`. With a collation-independent order, both matched.
+
+### OBS-009 — `.env.example` had drifted
+The template still used `LANGFUSE_HOST` and lacked `OTEL_SERVICE_NAME`. Found by comparing variable names between `.env` and `.env.example`; fixed.
+
+### OBS-010 — Query embeddings vary slightly between calls
+The same question's best distance changed in the 6th decimal (0.38318923 vs 0.38318203). Harmless for answers, but the CI gate needs a small margin.
+
+### OBS-011 — Grounding 0.0 on a well-sourced answer
+The model cited once per section, in headings, which the checker deliberately skips. The metric was correct by its own definition and harsh in spirit. Logged rather than changing the metric mid-phase, which would break comparison with the 58% baseline.
+
+### OBS-012 — Older service runs as the default compute account
+While giving the new service a least-privilege identity, we found churn-mlops uses the project's default account, which usually has editor-level access. Logged as a hardening item.

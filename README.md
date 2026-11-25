@@ -2,28 +2,28 @@
 
 > A production RAG system over Supabase's docs where the **observability layer is the product** and the chatbot is just the workload under management.
 
+**Live:** https://rag-api-215271667398.asia-south1.run.app — interactive API docs; try `/ask` with any Supabase question.
+
 ## The Problem
 
-LLM systems fail differently from normal software. A crashed server announces itself — but a hallucinated answer looks identical to a correct one: same confident tone, same speed, zero errors in the logs. Cost drifts upward token by token with no alarm. Latency degrades somewhere across retrieval, reranking, and generation, with no single place to look.
+LLM systems fail differently from normal software. A crashed server announces itself — but a hallucinated answer looks identical to a correct one: same confident tone, same speed, zero errors in the logs. Cost drifts upward token by token with no alarm. Latency degrades somewhere across retrieval and generation, with no single place to look.
 
-Most teams ship the chatbot first and bolt on logging later, so they discover failures from angry users. **This project inverts that.** The observability layer — hallucination rate, cost per query, latency breakdown, retrieval quality, and eval gates that block bad deploys — is built as the product. A RAG assistant over Supabase's documentation is simply the workload being monitored.
+Most teams ship the chatbot first and bolt on logging later, so they discover failures from angry users. **This project inverts that.** The observability layer — hallucination rate, cost per query, latency breakdown, retrieval quality, and eval gates that block bad changes — is built as the product. A RAG assistant over Supabase's documentation is simply the workload being monitored.
 
 ## Why This Project
 
 This is the LLM-reliability counterpart to a classical MLOps pipeline: proving that production language-model systems can be kept **alive, observable, and trustworthy** — not just demoed once and abandoned.
 
-## Target Architecture
+## Architecture
 
 | Layer | Choice | Why |
 |-------|--------|-----|
 | LLM access | Claude (Haiku default) + OpenAI fallback via LiteLLM | Multi-provider = no single point of failure |
-| Vector store | Postgres + pgvector | One boring, proven DB — fewer moving parts |
+| Vector store | Postgres + pgvector — local in Docker, Neon in production | One boring, proven DB — fewer moving parts |
 | Retrieval | Hybrid (BM25 + vector) with weighted RRF | Keywords catch exact terms vectors miss |
-| Orchestration | LangGraph | Explicit, debuggable state machine |
-| Observability | OpenTelemetry → Langfuse + Prometheus/Grafana | Instrument once, swap vendors freely |
+| Observability | Langfuse tracing (OpenTelemetry under the SDK) + Prometheus/Grafana locally | Instrument once, swap vendors freely |
 | Evaluation | Hand-built golden dataset + retrieval and end-to-end evals | Every change is measurable |
-| Safety | Guardrails AI | Injection + PII filtering at input and output |
-| Infra | FastAPI · Docker · Cloud Run · GitHub Actions · Terraform | Reused, battle-tested stack |
+| Serving | FastAPI · Docker · Cloud Run · Secret Manager · Cloud Scheduler | Scale-to-zero, secrets out of the image |
 
 ## Progress
 
@@ -38,15 +38,14 @@ Built in public, one phase at a time. Each phase ships a version tag.
 | 4 | Golden dataset — 120 hand-written questions | ✅ `v1.3` |
 | 5 | Eval pipeline — measurement fixed, settings tuned | ✅ `v1.4` |
 | 6 | Observability — tracing, metrics, dashboards, grounding score | ✅ `v1.5` |
-| 7 | Orchestration — LangGraph | ⬜ |
-| 8 | Safety — Guardrails | ⬜ |
-| 9 | Fine-tuning — RAG vs fine-tune comparison | ⬜ |
-| 10 | Production deploy — CI/CD with eval gates | ⬜ |
-| 11 | Storytelling — incident log, blog, launch | ⬜ |
+| 7 | Production — Docker, Neon, Cloud Run, cost guard, production tracing, eval-gated CI | 🟡 live; CI eval gate next |
+| 8 | Storytelling — write-up and launch | ⬜ |
+
+**Scope change.** The original plan also had LangGraph orchestration, Guardrails and a fine-tuning comparison. LangGraph and Guardrails moved to the agentic projects that follow this one — agents that call tools are where orchestration and input/output safety earn their place; a single-step docs assistant has little for them to do. Fine-tuning is parked: neither project needs it. Cutting scope on purpose kept this project focused on reliability.
 
 ## What it looks like
 
-Every query is traced to Langfuse; every metric is collected by Prometheus and drawn in Grafana. The dashboard below is provisioned from this repo — delete Grafana entirely and it rebuilds itself.
+Every query is traced to Langfuse; locally, every metric is also collected by Prometheus and drawn in Grafana. The dashboard below is provisioned from this repo — delete Grafana entirely and it rebuilds itself.
 
 ![Traffic by outcome, refusal rate, p95 latency by stage, cost per question](docs/images/dashboard-overview.png)
 
@@ -56,7 +55,7 @@ Every query is traced to Langfuse; every metric is collected by Prometheus and d
 
 *The quality row. The two red panels are honest: **fallback 2.61%** is a deliberate test — the server was run with a broken primary API key to prove the panel turns red ([INC-013](./INCIDENTS.md)). **Fake citations: 2** are false alarms from a bug in the checker itself, which read `files[0]` in JavaScript samples as a citation; fixed, and kept on screen because it happened ([INC-012](./INCIDENTS.md)).*
 
-## Current results (`v1.5`)
+## Current results
 
 Measured against 120 hand-written questions. Full detail in [`eval/REPORT.md`](./eval/REPORT.md).
 
@@ -69,7 +68,8 @@ Measured against 120 hand-written questions. Full detail in [`eval/REPORT.md`](.
 | Retrieval: bare tokens found (`aal2`, `42501`, ...) | **20 / 20** |
 | Hedge rate — declined, then explained what *is* documented | 26 / 100 |
 | Grounding — share of claim sentences carrying a source | **58%** baseline |
-| Cost per question | **$0.0040** |
+| Cost per question (golden set average) | **$0.0040** |
+| Cost per question in production | answered **$0.003–0.006**, refused **$0** |
 
 > **Correction.** An earlier version of this README reported 49% refusal accuracy. That number was a measurement error, not a system failure: every one of the 18 "wrongly answered" questions had actually opened with the refusal sentence and then added a line about what the documentation did cover. The detector counted any refusal longer than ~190 characters as a failure. The real figure on the same run was 35 / 35. See [INC-008](./INCIDENTS.md).
 
@@ -175,7 +175,7 @@ Most of this phase was fixing the yardstick, not the system. Three of the four c
 
 ### The one pipeline change
 
-A retrieval-only eval — no LLM calls, deterministic, and nearly free — swept the BM25 weight:
+A retrieval-only eval — no LLM calls and nearly free — swept the BM25 weight:
 
 | BM25 weight | 0.0 (vector only) | 0.5 (previous) | **1.0** | 1.5 | 2.0 |
 |---|---|---|---|---|---|
@@ -218,11 +218,13 @@ Within three test queries the retrieval spans exposed a problem the eval had mis
 | `rag_cost_usd_total`, `rag_tokens_total` | counters | token `type` |
 | `rag_llm_calls_total` | counter | `model` |
 | `rag_fake_citations_total` | counter | — |
+| `rag_daily_limit_total` | counter | — |
 | `rag_retrieval_seconds`, `rag_llm_seconds`, `rag_total_seconds` | histograms | — |
 | `rag_grounding_score` | histogram | — |
 
 - **Labels come from small fixed sets — never the question text.** Unbounded label values create a new time series per question
 - **Errors are separate from refusals.** A refusal is correct behaviour; an error means something broke
+- **Daily-limit rejections have their own counter**, not an outcome label — otherwise a busy day would look like the model refusing more
 - **LLM latency is only recorded when the model is called**, so gated refusals don't make the model look faster than it is
 - **Every label is created at zero on startup.** Prometheus measures change; a counter born at 1 shows no increase, so the first fallback was invisible until this was fixed ([INC-013](./INCIDENTS.md))
 
@@ -234,7 +236,7 @@ The prompt requires a source on every claim, so every answer is scored on **what
 
 It is a **warning light, not proof**: a sentence can carry `[1]` while `[1]` doesn't say that. An LLM judge on a sample is the next layer; running one on every query would double cost for the same trend line.
 
-**Baseline: 58%** of claim sentences sourced across the golden set. Good answers land around 60–100% — the check is strict, and the model sometimes sources a pair of sentences once.
+**Baseline: 58%** of claim sentences sourced across the golden set. Good answers land around 60–100% — the check is strict, and the model sometimes sources a pair of sentences once. It is strict by definition: an answer that cites once per section, in its headings, scores 0 even when well sourced ([OBS-011](./INCIDENTS.md)).
 
 **It caught a real incident on its first run.** The primary model's API key expired; the fallback took over and every request still succeeded with normal latency. But grounding on the same question fell from **62% to 25%** — the fallback model cited once per paragraph instead of once per claim. **Failover protected uptime, not quality** ([INC-011](./INCIDENTS.md)).
 
@@ -261,9 +263,61 @@ The data source and dashboard are provisioning files in `monitoring/grafana/`, w
 
 **Latency is almost entirely generation.** Retrieval is about a second; the LLM is the other six to eight. Making the system faster means fewer chunks, shorter answers or streaming — optimising retrieval would barely move the number.
 
+## Running in production (Phase 7)
+
+**Live:** https://rag-api-215271667398.asia-south1.run.app — opens the interactive API docs. Try `/ask` with any Supabase question.
+
+```
+Visitor ──> Cloud Run (Mumbai, scale-to-zero) ──> Neon Postgres + pgvector (Singapore)
+               │   keys from Secret Manager, own least-privilege service account
+               ├──> Claude (OpenAI fallback) via LiteLLM
+               └──> Langfuse  (every request traced, environment = production)
+Cloud Scheduler ──every 10 min──> /health   (keeps cold starts rare)
+```
+
+### How it's set up
+
+| Piece | Choice | Why |
+|---|---|---|
+| Container | `python:3.11-slim`, 10 pinned dependencies, non-root, 712 MB | `.dockerignore` is an allow-list — `.env` can never enter the image. ML libraries from a parked experiment were audited out |
+| Database | Neon (serverless Postgres, pgvector) | Auto-wakes after idle; a free Supabase project would pause after a week |
+| Secrets | Google Secret Manager | Loaded at startup. Each secret's length was verified after upload to rule out an invisible trailing newline |
+| Identity | Its own service account, read access to 4 secrets, **no project-wide roles** | Least privilege |
+| Images | Tagged with the git commit; the build refuses to run with uncommitted changes | A tag always means exactly the code inside |
+
+**Every move was verified, not assumed.** The same question returns the same best retrieval distance and the same 3,446 input tokens on a laptop, in Docker, against Neon and in the cloud. After the database migration, the full retrieval sweep matched all 20 earlier numbers, run with the local database switched off.
+
+### Cost protection — two layers
+
+| Layer | What it stops |
+|---|---|
+| **Daily question limit** (100/day, counted in Postgres in one atomic statement) | LLM provider bills. Over the limit → HTTP 429 *before* the LLM is called. Survives restarts; shared across instances |
+| **Cloud Run spend cap** (₹200/month) | Hosting bills. Note: the cap watches *gross* cost before free-tier credits — ₹12.59 gross vs ₹0.17 actually billed |
+
+Answered questions cost **$0.003–0.006**; refused questions cost **$0** (no LLM call).
+
+### Observability in production
+
+**Langfuse is the source of truth; Prometheus stays local.** On a scale-to-zero platform, in-memory counters don't survive. We proved it: three requests, then a forced restart — the app's counter went from **3 to 0**, while Langfuse still showed **3**. Production traffic is labelled `environment=production`, separate from local tests.
+
+![Production traces in Langfuse: an answer, a gated refusal, a hedge](docs/images/langfuse-production-traces.png)
+
+![Latency, cost and model per step](docs/images/langfuse-production-cost.png)
+
+**The incident that mattered most here ([INC-014](./INCIDENTS.md)):** right after the first deploy, 6 of 11 production traces never reached Langfuse — with no errors anywhere. Cloud Run attaches a *sampled* trace header to every request, and our root span inherited it, so most traces were silently dropped. This cannot happen on a laptop, which has no such header. Reproduced locally by sending the header with sampling off; fixed by starting each request from an empty trace context; verified with the burst pattern that used to lose 4 of 5 — **5 of 5 arrived**.
+
+### Cold starts
+
+Measured after 26 idle minutes: the first request took **21.7 s** (our own startup code: 2.9 s; the rest is the platform starting the container and Python loading libraries). Startup CPU boost makes cold starts faster, and a scheduled `/health` ping every 10 minutes makes them rare. The ping never touches the database or the question limit. Runs on free tiers: if the database has been idle, the first question may take a few extra seconds.
+
+### Not done yet
+
+- **CI eval gate** — next: block a merge when retrieval quality drops
+- **Infrastructure as code** — the Cloud Run service, secrets, scheduler and service account were created with commands and are documented here; Terraform is a follow-up
+
 ## Engineering log
 
-Thirteen incidents and five observations are recorded across Phases 1–6. Almost every one surfaced by cross-checking numbers rather than by an error message — and four of them were bugs in the measurement itself: two in the evaluation, two in the monitoring. See [`INCIDENTS.md`](./INCIDENTS.md) and [`DECISIONS.md`](./DECISIONS.md).
+Fourteen incidents and twelve observations are recorded across Phases 1–7. Almost every one surfaced by cross-checking numbers rather than by an error message — and several were bugs in the measurement itself: in the evaluation, in the dashboard, and in production tracing. See [`INCIDENTS.md`](./INCIDENTS.md) and [`DECISIONS.md`](./DECISIONS.md).
 
 ## Setup
 
@@ -277,7 +331,7 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# Configure secrets
+# Configure secrets — values without quotes (Docker reads quotes literally)
 cp .env.example .env
 # fill in ANTHROPIC_API_KEY, OPENAI_API_KEY, DATABASE_URL,
 # LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_BASE_URL
@@ -301,14 +355,20 @@ curl -X POST localhost:8000/ask -H "Content-Type: application/json" \
      -d '{"question": "how do I set up GitHub authentication?"}'
 # Grafana:    http://localhost:3000   (admin / admin)  → RAG Reliability
 # Prometheus: http://localhost:9090
-python -m eval.replay_api           # send the 120 golden questions through the API
+python -m eval.replay_api           # send the 120 golden questions through the LOCAL API
+                                    # (never the live one — it would hit the daily limit)
+
+# Run the API in Docker — the same image as production
+docker build -t rag-api:dev .
+DB_URL=$(grep '^DATABASE_URL=' .env | cut -d= -f2- | sed 's/localhost/host.docker.internal/')
+docker run -p 8000:8000 --env-file .env -e DATABASE_URL="$DB_URL" rag-api:dev
 
 # Inspect retrieval on its own
 python -m retrieval.hybrid_search "PGRST116"
 
 # Evaluate
 python -m eval.validate_dataset     # dataset integrity
-python -m eval.retrieval_eval       # retrieval sweep — free, ~7 min
+python -m eval.retrieval_eval       # retrieval sweep — ~7 min
 python -m eval.run_golden           # full end-to-end run — ~$0.50, ~8 min
 python -m eval.summarize            # end-to-end results
 ```
