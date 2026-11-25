@@ -24,6 +24,20 @@ This is the LLM-reliability counterpart to a classical MLOps pipeline: proving t
 | Observability | Langfuse tracing (OpenTelemetry under the SDK) + Prometheus/Grafana locally | Instrument once, swap vendors freely |
 | Evaluation | Hand-built golden dataset + retrieval and end-to-end evals | Every change is measurable |
 | Serving | FastAPI · Docker · Cloud Run · Secret Manager · Cloud Scheduler | Scale-to-zero, secrets out of the image |
+| CI | GitHub Actions: unit tests + retrieval eval gate, required on every pull request | A change that makes search worse cannot merge |
+
+```mermaid
+flowchart LR
+    U[Visitor] --> CR["Cloud Run · FastAPI<br/>Mumbai, scale-to-zero"]
+    CR -->|hybrid search| DB[("Neon Postgres + pgvector<br/>Singapore")]
+    CR -->|answer, with failover| LLM["Claude, then OpenAI<br/>via LiteLLM"]
+    CR -->|every request| LF["Langfuse<br/>production traces"]
+    SM["Secret Manager"] -. keys .-> CR
+    SCH["Cloud Scheduler"] -. "/health every 10 min" .-> CR
+    PR["Pull request"] --> GH["GitHub Actions<br/>unit tests + eval gate"]
+    GH -->|read-only user| DB
+    GH -->|red blocks the merge| MAIN["main"]
+```
 
 ## Progress
 
@@ -38,7 +52,7 @@ Built in public, one phase at a time. Each phase ships a version tag.
 | 4 | Golden dataset — 120 hand-written questions | ✅ `v1.3` |
 | 5 | Eval pipeline — measurement fixed, settings tuned | ✅ `v1.4` |
 | 6 | Observability — tracing, metrics, dashboards, grounding score | ✅ `v1.5` |
-| 7 | Production — Docker, Neon, Cloud Run, cost guard, production tracing, eval-gated CI | 🟡 live; CI eval gate next |
+| 7 | Production — Docker, Neon, Cloud Run, cost guard, production tracing, eval-gated CI | ✅ `v1.6` |
 | 8 | Storytelling — write-up and launch | ⬜ |
 
 **Scope change.** The original plan also had LangGraph orchestration, Guardrails and a fine-tuning comparison. LangGraph and Guardrails moved to the agentic projects that follow this one — agents that call tools are where orchestration and input/output safety earn their place; a single-step docs assistant has little for them to do. Fine-tuning is parked: neither project needs it. Cutting scope on purpose kept this project focused on reliability.
@@ -70,6 +84,7 @@ Measured against 120 hand-written questions. Full detail in [`eval/REPORT.md`](.
 | Grounding — share of claim sentences carrying a source | **58%** baseline |
 | Cost per question (golden set average) | **$0.0040** |
 | Cost per question in production | answered **$0.003–0.006**, refused **$0** |
+| CI eval gate | merge blocked below **68 / 85** retrieval or **19 / 20** bare tokens |
 
 > **Correction.** An earlier version of this README reported 49% refusal accuracy. That number was a measurement error, not a system failure: every one of the 18 "wrongly answered" questions had actually opened with the refusal sentence and then added a line about what the documentation did cover. The detector counted any refusal longer than ~190 characters as a failure. The real figure on the same run was 35 / 35. See [INC-008](./INCIDENTS.md).
 
@@ -310,10 +325,33 @@ Answered questions cost **$0.003–0.006**; refused questions cost **$0** (no LL
 
 Measured after 26 idle minutes: the first request took **21.7 s** (our own startup code: 2.9 s; the rest is the platform starting the container and Python loading libraries). Startup CPU boost makes cold starts faster, and a scheduled `/health` ping every 10 minutes makes them rare. The ping never touches the database or the question limit. Runs on free tiers: if the database has been idle, the first question may take a few extra seconds.
 
+### Eval-gated CI
+
+Every pull request runs two required checks, and `main` accepts changes only through pull requests — no bypass.
+
+```
+Pull request ──> Unit tests (~30 s, no keys) ──> Retrieval eval gate (~3 min) ──> merge allowed only if both pass
+```
+
+| Check | What it does |
+|---|---|
+| **Unit tests** | Lock in lessons from past incidents: code samples are never read as citations ([INC-012](./INCIDENTS.md)), citations to non-existent sources are caught, heading-only citations stay strict ([OBS-011](./INCIDENTS.md)) |
+| **Retrieval eval gate** | Runs the retrieval eval on the 85 answerable golden questions against the production database, and fails below **68 / 85** or **19 / 20** bare tokens. It imports the same scoring function as `eval/retrieval_eval.py`, so the gate and the eval cannot disagree |
+
+- **Thresholds were measured, not guessed:** four runs scored an identical 70 / 85 and 20 / 20. The two-point margin absorbs embedding noise ([OBS-010](./INCIDENTS.md)) while still failing a real regression
+- **The gate reads the database through a read-only role.** Inserts, deletes, schema changes and the usage table were each tried as that role and refused
+- **It fails closed.** The first CI run failed on a secret saved with a trailing newline — the gate went red, not silently green
+
+**Fire drill.** A pull request that switched off keyword search (`BM25_WEIGHT = 0.0`) was opened on purpose. The gate scored it **63 / 85 and 16 / 20** — exactly the numbers from the Phase 5 sweep — failed, and the merge button locked.
+
+![The gate failing the fire-drill pull request](docs/images/fire-drill-gate-failed.png)
+
+![Merge blocked by the required check](docs/images/fire-drill-merge-blocked.png)
+
 ### Not done yet
 
-- **CI eval gate** — next: block a merge when retrieval quality drops
-- **Infrastructure as code** — the Cloud Run service, secrets, scheduler and service account were created with commands and are documented here; Terraform is a follow-up
+- **Infrastructure as code** — the Cloud Run service, secrets, scheduler, service account and CI database role were created with commands and are documented here; Terraform is a follow-up
+- **LLM judge on a sample** — the grounding score checks that claims carry a source, not that the source supports them
 
 ## Engineering log
 
@@ -330,6 +368,7 @@ cd llm-reliability-platform
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+pip install pytest                  # for the unit tests (CI pins it in requirements-ci.txt)
 
 # Configure secrets — values without quotes (Docker reads quotes literally)
 cp .env.example .env
@@ -367,6 +406,8 @@ docker run -p 8000:8000 --env-file .env -e DATABASE_URL="$DB_URL" rag-api:dev
 python -m retrieval.hybrid_search "PGRST116"
 
 # Evaluate
+python -m pytest -q tests/          # unit tests — under a second, no keys
+python -m eval.gate                 # the CI gate locally — one retrieval run, pass/fail, ~2 min
 python -m eval.validate_dataset     # dataset integrity
 python -m eval.retrieval_eval       # retrieval sweep — ~7 min
 python -m eval.run_golden           # full end-to-end run — ~$0.50, ~8 min

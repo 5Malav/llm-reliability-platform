@@ -159,3 +159,20 @@ A running log of architectural decisions, the alternatives considered, and the r
 **Confirmed end to end:** a full 120-question run held unanswerable at 35/35 and improved answerable 57 → 59.
 
 **Also found:** two wrong labels in the golden set, and that a single expected file is the wrong test for bare tokens, which live in many docs. Bare tokens are now scored on whether any retrieved chunk contains the token text.
+
+## Phase 7 — Production
+
+### DEC-017 — Cut LangGraph, Guardrails and fine-tuning from this project
+Moved LangGraph and Guardrails to the agent projects, where tool calls give them real work; parked fine-tuning. Kept this project focused on reliability.
+
+### DEC-018 — Neon over Supabase for the hosted database
+Neon wakes automatically after idle; a free Supabase project pauses after a week, which would break a portfolio demo. No vector index, so search is an exact scan and results matched exactly after the move.
+
+### DEC-019 — Cloud Run in Mumbai, with two cost layers
+Tier-1 pricing, same region as the existing service; the database trip to Singapore adds about 0.1 s. A daily question limit protects LLM bills; a Cloud Run spend cap protects hosting bills.
+
+### DEC-020 — Langfuse is production's source of truth
+In-memory Prometheus counters reset on scale-to-zero (shown: 3 → 0 after a restart while Langfuse kept 3). Prometheus and Grafana stay for local runs.
+
+### DEC-021 — Gate thresholds 68 / 85 and 19 / 20, required with no bypass
+Four measured runs scored 70 / 85 and 20 / 20. The margin absorbs embedding noise; a real regression (63 / 85, 16 / 20) still fails.
