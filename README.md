@@ -188,7 +188,7 @@ Searching the error code `PGRST116`:
 Unanswerable questions are 29% of the set deliberately. A set that is 95% answerable can score well while refusing nothing correctly.
 
 **Known weaknesses in the dataset itself:**
-- Most unanswerable questions use absolute phrasing — "exact", "guaranteed", "confidential" — which makes them *easy* refusals. The hard ones are mild and ordinary. A future revision should weight toward those.
+- Most unanswerable questions use absolute phrasing — "exact", "guaranteed", "confidential" — which makes them *easy* refusals. The hard ones are mild and ordinary.
 - Expected-source labels were written by hand and two were found to be wrong in Phase 5. Some remaining retrieval misses are likely label errors.
 
 ## Evaluation (Phase 5 — `v1.4`)
@@ -265,7 +265,7 @@ Within three test queries the retrieval spans exposed a problem the eval had mis
 
 The prompt requires a source on every claim, so every answer is scored on **what share of its claim sentences carry one**, and on any citation pointing at a source that doesn't exist. It is free, instant and runs on 100% of traffic.
 
-It is a **warning light, not proof**: a sentence can carry `[1]` while `[1]` doesn't say that. An LLM judge on a sample is the next layer; running one on every query would double cost for the same trend line.
+It is a **warning light, not proof**: a sentence can carry `[1]` while `[1]` doesn't say that.
 
 **Baseline: 58%** of claim sentences sourced across the golden set. Good answers land around 60–100% — the check is strict, and the model sometimes sources a pair of sentences once. It is strict by definition: an answer that cites once per section, in its headings, scores 0 even when well sourced ([OBS-011](./INCIDENTS.md)).
 
@@ -363,11 +363,6 @@ Pull request ──> Unit tests (~30 s, no keys) ──> Retrieval eval gate (~3
 ![The gate failing the fire-drill pull request](docs/images/fire-drill-gate-failed.png)
 
 ![Merge blocked by the required check](docs/images/fire-drill-merge-blocked.png)
-
-### Not done yet
-
-- **Infrastructure as code** — the Cloud Run service, secrets, scheduler, service account and CI database role were created with commands and are documented here; Terraform is a follow-up
-- **LLM judge on a sample** — the grounding score checks that claims carry a source, not that the source supports them
 
 ## Engineering log
 
